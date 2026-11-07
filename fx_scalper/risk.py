@@ -28,7 +28,8 @@ class Config:
     slippage_pips: float=SLIPPAGE_PIPS
     session_reset_utc: str="00:00"
     @property
-    def break_even_pips(self): return self.spread_pips+self.commission_pips+self.slippage_pips
+    def break_even_pips(self) -> float:
+        return self.spread_pips + self.commission_pips + self.slippage_pips
 
 @dataclass(frozen=True)
 class BrokerInputs:
@@ -63,14 +64,12 @@ def _utc_day(now):
 def _validate_config(c):
     ranges={"risk_per_trade_pct":.50,"daily_loss_limit_pct":2.0,"max_leverage_policy":10.0,
             "max_trades_per_day":20,"max_open_positions":3}
-    values={}
     for k, ceiling in ranges.items():
         v=_positive(getattr(c,k),k)
         if v>ceiling: raise RiskError(f"policy ceiling exceeded: {k}")
         if k in ("max_trades_per_day","max_open_positions") and (not isinstance(getattr(c,k),int) or isinstance(getattr(c,k),bool)):
             raise RiskError(f"{k} must be an integer")
         if k=="max_leverage_policy" and v<1: raise RiskError("invalid leverage")
-        values[k]=v
     for k in ("spread_pips","commission_pips","slippage_pips"):
         v=_number(getattr(c,k),k)
         if v<0: raise RiskError(f"{k} must be >= 0")
@@ -147,15 +146,38 @@ class RiskManager:
         if self.trades_today>=cfg.max_trades_per_day: return Decision(False,reason="MAX_TRADES_PER_DAY reached")
         if isinstance(open_positions,bool) or not isinstance(open_positions,int) or open_positions<0: raise RiskInputError("open_positions must be a non-negative integer")
         if open_positions>=cfg.max_open_positions: return Decision(False,reason="MAX_OPEN_POSITIONS reached")
-        lev=_positive(broker.max_leverage,"broker max leverage"); effective=min(cfg.max_leverage_policy,lev)
-        be=cfg.break_even_pips; stop=_positive(request.stop_pips,"stop_pips"); target=_positive(request.target_pips,"target_pips")
-        if stop<=be: return Decision(False,reason=f"stop {stop} not > break-even {be}")
-        if target<=be: return Decision(False,reason=f"target {target} not > break-even {be}")
-        pv=_positive(broker.pip_value_per_unit,"pip value per unit"); step=_positive(broker.lot_step,"lot step"); minimum=_positive(broker.min_units,"min units"); price=_positive(request.entry_price,"entry price")
-        risk_units=eq*cfg.risk_per_trade_pct/100/(stop*pv)
-        cap_units=effective*eq/price
-        units=math.floor(min(risk_units,cap_units)/step)*step
-        if units<minimum: return Decision(False,reason="units below broker minimum after rounding")
-        leverage=units*price/eq
-        if leverage>effective: return Decision(False,reason=f"leverage {leverage:.4f} > effective cap {effective}")
-        return Decision(True,units=units,reason="ok")
+
+        # 4. Broker leverage readable; effective cap = min(policy, broker)
+        broker_lev = _positive(broker.max_leverage, "broker max leverage")
+        effective_lev = min(cfg.max_leverage_policy, broker_lev)
+
+        # 5. Stop and target strictly greater than break-even
+        be = cfg.break_even_pips
+        stop = _positive(request.stop_pips, "stop_pips")
+        target = _positive(request.target_pips, "target_pips")
+        if stop <= be:
+            return Decision(False, reason=f"stop {stop} not > break-even {be}")
+        if target <= be:
+            return Decision(False, reason=f"target {target} not > break-even {be}")
+
+        # 6. Units = floor_to_lot_step(min(risk units, cap units)).
+        #    risk units: risk amount / (stop pips x pip value)  (risk.md section 2)
+        #    cap units:  effective cap x equity / price          (risk.md section 3)
+        #    Rounding is DOWN only, so risk never exceeds RISK_PER_TRADE_PCT.
+        pip_value = _positive(broker.pip_value_per_unit, "pip value per unit")
+        lot_step = _positive(broker.lot_step, "lot step")
+        min_units = _positive(broker.min_units, "min units")
+        price = _positive(request.entry_price, "entry price")
+        risk_amount = eq * cfg.risk_per_trade_pct / 100.0
+        risk_units = risk_amount / (stop * pip_value)
+        cap_units = effective_lev * eq / price
+        units = math.floor(min(risk_units, cap_units) / lot_step) * lot_step
+        if units < min_units:
+            return Decision(False, reason="units below broker minimum after rounding")
+
+        # 7. Post-trade leverage: notional / equity <= effective cap (safety net)
+        leverage = units * price / eq
+        if leverage > effective_lev:
+            return Decision(False, reason=f"leverage {leverage:.4f} > effective cap {effective_lev}")
+
+        return Decision(True, units=units, reason="ok")
