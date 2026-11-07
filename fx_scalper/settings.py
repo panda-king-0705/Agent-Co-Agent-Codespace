@@ -1,8 +1,11 @@
-"""Runtime settings for the FX scalper (spec section 15).
+"""Runtime settings for the FX scalper (spec sections 14 and 15).
 
 Credentials are read only from environment variables. There are no defaults
 for the token or account id, and nothing is read from files. Error messages
 name the variable but never print its value.
+
+Strategy parameters carry the defaults from docs/fx-scalper/spec.md section 14.
+They are plain fields with defaults, so load_settings() needs no extra input.
 """
 
 from __future__ import annotations
@@ -28,6 +31,26 @@ class Settings:
     account_id: str = field(repr=False)
     live_mode: bool = False
     host: str = PRACTICE_HOST
+    # Strategy parameters (spec section 14 keys, lower-cased).
+    instrument: str = "EUR_USD"  # section 1
+    pip_size: float = 0.0001  # section 1
+    ema_fast_period: int = 9  # section 2
+    ema_slow_period: int = 21  # section 2
+    rsi_period: int = 14  # section 2
+    rsi_long_min: float = 50.0  # section 3
+    rsi_long_max: float = 70.0  # section 3
+    rsi_short_min: float = 30.0  # section 3
+    rsi_short_max: float = 50.0  # section 3
+    stop_loss_pips: float = 4.0  # section 4 (design parameter)
+    take_profit_pips: float = 6.0  # section 4 (design parameter)
+    max_hold_minutes: int = 15  # section 4 (design parameter)
+    session_start_utc: str = "13:00"  # section 5
+    session_end_utc: str = "16:00"  # section 5
+    blackout_file: str = "config/blackout.json"  # section 6
+    news_pause_minutes: int = 15  # section 6
+    max_spread_pips: float = 1.5  # section 7 (design parameter)
+    no_entry_friday_utc: str = "20:00"  # section 8
+    forced_flat_friday_utc: str = "20:45"  # section 8
 
 
 def _required(env: Mapping[str, str], name: str) -> str:
