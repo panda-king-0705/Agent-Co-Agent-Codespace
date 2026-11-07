@@ -74,7 +74,7 @@ These are assumptions. Each must be checked against real practice data and the b
 
 - **Spread — ASSUMPTION.** Backtest fallback is 1.0 pip (`ASSUMED_SPREAD_PIPS = 1.0`), applied as half-spread on each side of each fill. Live fills use the actual bid/ask.
 - **Slippage — ASSUMPTION.** 0.5 pip adverse on every market fill (entries, time exits, crossover exits, forced flat) and on stop-loss fills. Take-profit fills are assumed at the target price with no slippage. Config: `SLIPPAGE_PIPS = 0.5`.
-- **Commission — ASSUMPTION.** 0 pips in the model. The model assumes spread-only costs on this practice account. Config: `COMMISSION_PIPS = 0.0`. Verify against the OANDA fee schedule before relying on it. Note: risk.md section 1 uses a planning value of 0.5 pip for commission in its break-even calculation; the two must be reconciled before go-live.
+- **Commission — ASSUMPTION.** 0.5 pip. This is the planning value from Finance's docs/fx-scalper/risk.md (`commission_pips = 0.5`), used in its break-even calculation, and it is the single value used by spec, risk.md and code. Config: `COMMISSION_PIPS = 0.5`. It is a planning input, not a quoted broker fee: verify against the OANDA fee schedule before relying on it and update risk.md and this spec together. Open point: risk.md defines it as a round-trip figure, while `fx_scalper/executor.py` applies it per fill (2 × value per round trip); see the PR #3 description.
 
 ## 10. Position limits and sizing (refer to risk.md)
 
@@ -134,7 +134,7 @@ These are assumptions. Each must be checked against real practice data and the b
 | NO_ENTRY_FRIDAY_UTC | "20:00" | design | 8 |
 | FORCED_FLAT_FRIDAY_UTC | "20:45" | design | 8 |
 | SLIPPAGE_PIPS | 0.5 | ASSUMPTION | 9 |
-| COMMISSION_PIPS | 0.0 | ASSUMPTION | 9 |
+| COMMISSION_PIPS | 0.5 | ASSUMPTION (Finance risk.md value) | 9 |
 | ORDER_UNITS | 1000 | design placeholder (risk.md governs) | 10 |
 | TRADE_LOG_PATH | "logs/trades.csv" | file path | 11 |
 | LIVE_MODE | false | design (off by default; env `FX_SCALPER_LIVE_MODE`) | 15 |
