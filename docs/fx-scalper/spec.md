@@ -1,10 +1,11 @@
 # FX Scalper Spec — EUR/USD, 1-minute, practice only
 
-Status: draft for review. Linked: T-308 (feature branch t-308-fx-scalper), T-310 (this task), T-319 (strategy sections and config keys), T-306 (parent objective).
+Status: complete for T-323 review (spec committed before any code). No backtest result exists yet.
+Linked: T-308 (feature branch t-308-fx-scalper), T-310 (original spec), T-319 (strategy sections and config keys), T-323 (completion and settings/broker interface), T-306 (parent objective).
 Scope: paper trading only. The only broker endpoint is the OANDA v20 **practice** host. No live trading is in scope.
 Position limits and sizing: governed by docs/fx-scalper/risk.md (see section 10). This spec does not restate them.
 
-Config convention: every tunable value below is named by its key in `fx_scalper/config.py`, with its default in brackets. The config file is not yet in the repository; the keys are the contract for it.
+Config convention: every tunable value below is named by its key in `fx_scalper/config.py`, with its default in brackets. The keys are the contract for `fx_scalper/settings.py` (see section 15).
 
 ## 1. Market and data
 
@@ -104,6 +105,7 @@ These are assumptions. Each must be checked against real practice data and the b
 - [x] Spread, commission and slippage each labelled as an assumption (section 9).
 - [x] Position limits referred to risk.md, no new numbers (section 10).
 - [x] Every tunable value has a config key and default (sections 1–11, 14).
+- [x] Credentials read only from environment variables; live mode off by default (section 15).
 
 ## 14. Config key register (`fx_scalper/config.py`)
 
@@ -135,5 +137,15 @@ These are assumptions. Each must be checked against real practice data and the b
 | COMMISSION_PIPS | 0.0 | ASSUMPTION | 9 |
 | ORDER_UNITS | 1000 | design placeholder (risk.md governs) | 10 |
 | TRADE_LOG_PATH | "logs/trades.csv" | file path | 11 |
+| LIVE_MODE | false | design (off by default; env `FX_SCALPER_LIVE_MODE`) | 15 |
+| OANDA_API_TOKEN | none | secret, env only (`OANDA_API_TOKEN`) | 15 |
+| OANDA_ACCOUNT_ID | none | secret, env only (`OANDA_ACCOUNT_ID`) | 15 |
 
 Limits from risk.md (POLICY and BROKER values, including MAX_TRADES_PER_DAY, MAX_OPEN_POSITIONS, DAILY_LOSS_LIMIT_PCT, RISK_PER_TRADE_PCT, MAX_LEVERAGE) are not repeated here. They are read from risk.md and the broker.
+
+## 15. Credentials and run mode (added T-323)
+
+- **Credentials:** the OANDA API token and account id are read only from the environment variables `OANDA_API_TOKEN` and `OANDA_ACCOUNT_ID`. They have no defaults and are never read from a file in the repository. If either is missing, settings loading fails with an error that names the variable but never prints its value.
+- **Run mode:** `LIVE_MODE` is off by default. It is enabled only when the environment variable `FX_SCALPER_LIVE_MODE` is exactly `true`. Live mode is out of scope for this spec (section 0 and the scope line at top); the flag exists so the code path can be refused until a later, separately approved task.
+- **Endpoint:** the practice host only. The settings do not expose a live host.
+- **Secrets in logs:** the token is never written to the trade log, the console or any file.
