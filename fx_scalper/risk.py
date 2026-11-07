@@ -3,6 +3,12 @@
 Enforcement order follows risk.md section 7; the first failure rejects the order.
 Fail closed: unreadable equity, broker inputs or timestamps reject the order.
 
+Sizing (T-367, engineering decision by Kenji Tanaka, engineering/T-367-sizing-decision.md):
+    risk_units = (equity x RISK_PER_TRADE_PCT / 100) / (stop_pips x pip_value)   # risk.md section 2
+    cap_units  = MAX_LEVERAGE_EFFECTIVE x equity / price                          # risk.md section 3
+    units      = floor_to_lot_step(min(risk_units, cap_units))
+Reject only if units fall below the broker minimum. Risk per trade never exceeds 0.50%.
+
 ASSUMPTION: commission_pips = 0.5 is the risk.md section 1 planning value.
 OPEN CONFLICT: spec.md section 9 uses COMMISSION_PIPS = 0.0. Not resolved here;
 must be reconciled by Finance and Engineering before go-live.
@@ -182,18 +188,22 @@ class RiskManager:
         if target <= be:
             return Decision(False, reason=f"target {target} not > break-even {be}")
 
-        # 6. Units: risk amount / (stop pips x pip value), rounded DOWN to lot step
+        # 6. Units = floor_to_lot_step(min(risk units, cap units)).
+        #    risk units: risk amount / (stop pips x pip value)  (risk.md section 2)
+        #    cap units:  effective cap x equity / price          (risk.md section 3)
+        #    Rounding is DOWN only, so risk never exceeds RISK_PER_TRADE_PCT.
         pip_value = _positive(broker.pip_value_per_unit, "pip value per unit")
         lot_step = _positive(broker.lot_step, "lot step")
         min_units = _positive(broker.min_units, "min units")
         price = _positive(request.entry_price, "entry price")
         risk_amount = eq * cfg.risk_per_trade_pct / 100.0
-        raw_units = risk_amount / (stop * pip_value)
-        units = math.floor(raw_units / lot_step) * lot_step
+        risk_units = risk_amount / (stop * pip_value)
+        cap_units = effective_lev * eq / price
+        units = math.floor(min(risk_units, cap_units) / lot_step) * lot_step
         if units < min_units:
             return Decision(False, reason="units below broker minimum after rounding")
 
-        # 7. Post-trade leverage: notional / equity <= effective cap
+        # 7. Post-trade leverage: notional / equity <= effective cap (safety net)
         leverage = units * price / eq
         if leverage > effective_lev:
             return Decision(False, reason=f"leverage {leverage:.4f} > effective cap {effective_lev}")
