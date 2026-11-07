@@ -39,13 +39,12 @@ class CsvTradeLog:
             writer.writerow(row)
 
 class SimulatedExecutor:
-    """Entries require completed-bar signal evidence, session gates and risk approval.
+    \"\"\"Entries require completed-bar signal evidence, session gates and risk approval.
 
     Commission defaults to risk.Config's planning value PER ROUND TRIP (charged once,
-    on exit). The spec's zero commission conflicts with that value; no reconciliation
-    is claimed.
+    on exit).
     Equity is initial/external equity plus this executor's realized net P&L.
-    """
+    \"\"\"
     def __init__(self, settings, risk, broker_inputs, equity, log,
                  commission_pips=None, slippage_pips=0.5):
         self.settings, self.risk, self.broker_inputs = settings, risk, broker_inputs
@@ -59,7 +58,6 @@ class SimulatedExecutor:
         return self.risk.config.spread_pips if bar.spread_pips is None else float(bar.spread_pips)
     def enter(self, side, bar, stop_pips=None, target_pips=None, open_positions=0, *, history=()):
         from .gates import entry_allowed
-        # No caller-supplied boolean can bypass signal calculation.
         if self.position is not None or side not in ('long', 'short') or not history: return False
         if history[-1].time >= bar.time: return False
         if signals_for_closes([b.close for b in history], self.settings)[-1] != side: return False
