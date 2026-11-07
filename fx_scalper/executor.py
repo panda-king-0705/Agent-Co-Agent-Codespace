@@ -41,8 +41,9 @@ class CsvTradeLog:
 class SimulatedExecutor:
     """Entries require completed-bar signal evidence, session gates and risk approval.
 
-    Commission defaults to risk.Config's planning value PER FILL. The spec's
-    zero commission conflicts with that value; no reconciliation is claimed.
+    Commission defaults to risk.Config's planning value PER ROUND TRIP (charged once,
+    on exit). The spec's zero commission conflicts with that value; no reconciliation
+    is claimed.
     Equity is initial/external equity plus this executor's realized net P&L.
     """
     def __init__(self, settings, risk, broker_inputs, equity, log,
@@ -83,7 +84,7 @@ class SimulatedExecutor:
         mid = bar.close if mid_price is None else mid_price
         spread = (p['spread']+self._spread(bar))/2
         slip = self.slippage_pips + (0 if reason == 'take_profit' else self.slippage_pips)
-        commission = 2*self.commission_pips
+        commission = self.commission_pips
         gross = direction*(mid-p['mid'])/self.settings.pip_size
         net = gross-spread-slip-commission
         price = mid-direction*(self._spread(bar)/2 + (0 if reason == 'take_profit' else self.slippage_pips))*self.settings.pip_size

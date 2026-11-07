@@ -26,7 +26,8 @@ def test_costs_and_append(tmp_path):
         t=e.exit(bar(T+timedelta(minutes=1),1.1006),'take_profit')
         assert t.pnl_pips == pytest.approx(6)
         assert t.net_pnl_pips == pytest.approx(6-t.spread_pips-t.commission_pips-t.slippage_pips)
-        assert t.commission_pips == 2*e.risk.config.commission_pips
+        # Commission is charged once per round trip (T-369), not once per fill.
+        assert t.commission_pips == e.risk.config.commission_pips
     with (tmp_path/'trades.csv').open() as f:
         rows=list(csv.DictReader(f))
     assert len(rows)==2
