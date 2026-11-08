@@ -39,12 +39,12 @@ class CsvTradeLog:
             writer.writerow(row)
 
 class SimulatedExecutor:
-    \"\"\"Entries require completed-bar signal evidence, session gates and risk approval.
+    """Entries require completed-bar signal evidence, session gates and risk approval.
 
     Commission defaults to risk.Config's planning value PER ROUND TRIP (charged once,
     on exit).
     Equity is initial/external equity plus this executor's realized net P&L.
-    \"\"\"
+    """
     def __init__(self, settings, risk, broker_inputs, equity, log,
                  commission_pips=None, slippage_pips=0.5):
         self.settings, self.risk, self.broker_inputs = settings, risk, broker_inputs
