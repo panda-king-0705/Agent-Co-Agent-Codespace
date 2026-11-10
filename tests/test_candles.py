@@ -88,13 +88,45 @@ def test_stops_at_end_exclusive():
 def test_pages_through_full_pages(monkeypatch):
     monkeypatch.setattr(oanda, "MAX_CANDLES_PER_REQUEST", 3)
     first = [raw_candle(T0 + timedelta(minutes=i)) for i in range(3)]
-    second = [raw_candle(T0 + timedelta(minutes=i)) for i in range(3, 5)]
+    second = [raw_candle(T0 + timedelta(minutes=i)) for i in range(2, 4)]  # repeats minute 2
     b, t = broker([(200, {"candles": first}), (200, {"candles": second})])
     candles = b.get_candles("EUR_USD", "M1", T0, T0 + timedelta(hours=1))
-    assert [c.time for c in candles] == [T0 + timedelta(minutes=i) for i in range(5)]
+    assert [c.time for c in candles] == [T0 + timedelta(minutes=i) for i in range(4)]
     assert len(t.calls) == 2
     q = query(t.calls[1][1])
-    assert q["from"] == "2026-11-02T13:02:00Z" and q["includeFirst"] == "false"
+    assert q["from"] == "2026-11-02T13:02:00Z" and q["includeFirst"] == "true"
+
+
+class OandaLikeServer:
+    """Serves a fixed candle series with OANDA's from/count/includeFirst semantics.
+
+    includeFirst=false drops the candle at `from` and still counts it, so the page holds
+    count-1 candles; that is the behaviour that truncated the real downloads.
+    """
+
+    def __init__(self, times):
+        self.times = times
+        self.calls = []
+
+    def __call__(self, method, url, headers, body):
+        self.calls.append(url)
+        q = query(url)
+        start = datetime.fromisoformat(q["from"].replace("Z", "+00:00"))
+        page = [t for t in self.times if t >= start][: int(q["count"])]
+        if q["includeFirst"] == "false" and page and page[0] == start:
+            page = page[1:]
+        return 200, {"candles": [raw_candle(t) for t in page]}
+
+
+def test_downloads_every_candle_across_many_pages(monkeypatch):
+    monkeypatch.setattr(oanda, "MAX_CANDLES_PER_REQUEST", 5)
+    times = [T0 + timedelta(minutes=i) for i in range(23)]
+    server = OandaLikeServer(times)
+    settings = Settings(api_token="test-token", account_id="101-000-0000000-001", host=PRACTICE_HOST)
+    b = OandaPracticeBroker(settings, transport=server)
+    candles = b.get_candles("EUR_USD", "M1", T0, T0 + timedelta(days=1))
+    assert [c.time for c in candles] == times
+    assert len(server.calls) == 6  # 5 full pages (4 new candles each after the first) + 1 short
 
 
 def test_empty_page_ends_download():
