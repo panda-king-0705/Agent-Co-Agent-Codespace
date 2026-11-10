@@ -109,8 +109,10 @@ class FxScalperEurUsd(QCAlgorithm):
         self.halted = False
         self.position = None  # dict while a trade is open
         self.trades = []
-        self.double_fills = 0
+        self.reconciliations = 0
         self.skipped = {"spread": 0, "risk_halt": 0, "trade_limit": 0, "size": 0}
+        self.first_bar = None
+        self.last_bar = None
 
     # --- per-bar logic ------------------------------------------------------
 
@@ -118,6 +120,9 @@ class FxScalperEurUsd(QCAlgorithm):
         bar = data.quote_bars.get(self.symbol)
         if bar is None:
             return
+        self.first_bar = self.first_bar or self.time
+        self.last_bar = self.time
+        self._reconcile(bar)
         self._roll_day()
         if not (self._fast.is_ready and self._slow.is_ready and self._rsi.is_ready):
             return
@@ -167,8 +172,10 @@ class FxScalperEurUsd(QCAlgorithm):
         equity = self.portfolio.total_portfolio_value
         price = bar.ask.close if direction > 0 else bar.bid.close
         risk_units = equity * self.risk_per_trade / (self.stop_pips * PIP)
-        # 1% under the cap so LEAN's buying-power check, which includes fees, still passes.
-        cap_units = equity * self.max_leverage * 0.99 / price
+        # Leverage cap, limited further by free margin; 1% under so LEAN's buying-power
+        # check, which includes fees, still passes.
+        margin_base = min(equity, self.portfolio.margin_remaining)
+        cap_units = margin_base * self.max_leverage * 0.99 / price
         units = int(math.floor(min(risk_units, cap_units)))
         if units < 1:
             self.skipped["size"] += 1
@@ -182,44 +189,61 @@ class FxScalperEurUsd(QCAlgorithm):
         self.transactions.cancel_open_orders(self.symbol)
         qty = self.portfolio[self.symbol].quantity
         if qty != 0:
+            self.position["exiting"] = reason
             self.market_order(self.symbol, -qty, tag=f"exit:{reason}")
+
+    def _reconcile(self, bar):
+        """Holdings must equal the tracked trade. If not (a fill was missed or arrived late), flatten."""
+        p = self.position
+        if p is not None and "entry_price" not in p:
+            return  # entry still pending
+        qty = self.portfolio[self.symbol].quantity
+        expected = p["direction"] * p["filled_units"] if p is not None else 0
+        if qty == expected:
+            return
+        self.reconciliations += 1
+        self.debug(f"{self.time}: holdings {qty} != tracked {expected}; flattening")
+        self.transactions.cancel_open_orders(self.symbol)
+        if p is not None:
+            mid = (bar.bid.close + bar.ask.close) / 2
+            self._close_trade("reconciled", mid)
+        if qty != 0:
+            self.market_order(self.symbol, -qty, tag="exit:reconcile")
 
     # --- orders -------------------------------------------------------------
 
     def on_order_event(self, event):
         tag = self.transactions.get_order_by_id(event.order_id).tag or ""
         p = self.position
-        if event.status in (OrderStatus.INVALID, OrderStatus.CANCELED) and tag == "entry":
+        entry_pending = p is not None and "entry_price" not in p
+        if event.status in (OrderStatus.INVALID, OrderStatus.CANCELED) and tag == "entry" and entry_pending:
             self.debug(f"{self.time}: entry order {event.status}: {event.message}")
             self.position = None
             return
         if event.status != OrderStatus.FILLED:
             return
 
-        if tag == "entry" and p is not None:
+        if tag == "entry" and entry_pending:
             p["entry_price"] = event.fill_price
             p["entry_time"] = self.time
+            p["filled_units"] = abs(int(event.fill_quantity))
             d, q = p["direction"], event.fill_quantity
-            stop = event.fill_price - d * self.stop_pips * PIP
-            target = event.fill_price + d * self.target_pips * PIP
-            p["stop_ticket"] = self.stop_market_order(self.symbol, -q, stop, tag="stop")
-            p["target_ticket"] = self.limit_order(self.symbol, -q, target, tag="target")
+            stop = round(event.fill_price - d * self.stop_pips * PIP, 5)
+            target = round(event.fill_price + d * self.target_pips * PIP, 5)
+            p["stop_id"] = self.stop_market_order(self.symbol, -q, stop, tag="stop").order_id
+            p["target_id"] = self.limit_order(self.symbol, -q, target, tag="target").order_id
             return
 
+        # Only fills that belong to the current trade close it. Anything else is stale;
+        # _reconcile flattens whatever it did to holdings on the next bar.
         if p is None or "entry_price" not in p:
             return
-        if tag in ("stop", "target"):
-            other = p["target_ticket"] if tag == "stop" else p["stop_ticket"]
-            if other.status not in (OrderStatus.FILLED, OrderStatus.CANCELED):
-                other.cancel()
-            self._close_trade(tag, event.fill_price)
-            if self.portfolio[self.symbol].quantity != 0:
-                # Stop and target both filled in one bar; flatten and count it.
-                self.double_fills += 1
-                self.transactions.cancel_open_orders(self.symbol)
-                self.market_order(self.symbol, -self.portfolio[self.symbol].quantity, tag="double_fill_fix")
-        elif tag.startswith("exit:"):
-            self._close_trade(tag.split(":", 1)[1], event.fill_price)
+        oid = event.order_id
+        if oid in (p.get("stop_id"), p.get("target_id")):
+            self.transactions.cancel_open_orders(self.symbol)
+            self._close_trade("stop" if oid == p["stop_id"] else "target", event.fill_price)
+        elif tag.startswith("exit:") and p.get("exiting"):
+            self._close_trade(p["exiting"], event.fill_price)
 
     def _close_trade(self, reason, exit_price):
         p = self.position
@@ -285,8 +309,10 @@ class FxScalperEurUsd(QCAlgorithm):
             "net_pips": round(sum(x["net_pips"] for x in t), 1),
             "avg_spread_at_signal_pips": round(sum(x["spread_at_signal_pips"] for x in t) / n, 2) if n else 0.0,
             "by_exit_reason": by_reason,
-            "double_fills": self.double_fills,
+            "reconciliations": self.reconciliations,
             "skipped_entries": self.skipped,
+            "data_utc": f"{self.first_bar} to {self.last_bar}",
+            "end_equity": round(self.portfolio.total_portfolio_value, 2),
             "parameters": {
                 "stop_pips": self.stop_pips, "target_pips": self.target_pips,
                 "max_hold_minutes": self.max_hold.total_seconds() / 60,
@@ -295,7 +321,16 @@ class FxScalperEurUsd(QCAlgorithm):
                 "commission_pips_round_trip": self.commission_rt,
             },
         }
-        self.log("FX_SCALPER_SUMMARY " + json.dumps(summary))
-        for key in ("trades", "win_rate_pct", "expectancy_pips", "net_pips"):
+        # Console (debug) output is what the IDE shows; keep each line short.
+        headline = {k: v for k, v in summary.items() if k not in ("by_exit_reason", "skipped_entries", "parameters")}
+        self.debug("FX_SCALPER_SUMMARY " + json.dumps(headline))
+        self.debug("FX_SCALPER_EXITS " + json.dumps(by_reason))
+        self.debug("FX_SCALPER_SKIPPED " + json.dumps(self.skipped))
+        self.debug("FX_SCALPER_PARAMS " + json.dumps(summary["parameters"]))
+        self.log("FX_SCALPER_FULL " + json.dumps(summary))
+        for key in ("trades", "win_rate_pct", "expectancy_pips", "net_pips", "reconciliations"):
             self.set_runtime_statistic(key, str(summary[key]))
-        self.object_store.save("fx_scalper/eurusd_trades.json", json.dumps({"summary": summary, "trades": t}))
+        try:
+            self.object_store.save("fx_scalper/eurusd_trades.json", json.dumps({"summary": summary, "trades": t}))
+        except Exception as exc:  # e.g. no Object Store write permission on this account
+            self.debug(f"Object Store save skipped: {exc}")
