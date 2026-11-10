@@ -1,0 +1,29 @@
+# Runs the test suite on every push and pull request, so the agents (who cannot run code themselves)
+# can read real results through the GitHub connection's actions tools.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pytest
+        run: python -m pip install --upgrade pip pytest
+      - name: Run the tests
+        # -ra lists every test that did not pass, with the reason, at the end of the log.
+        run: python -m pytest -q -ra --tb=short

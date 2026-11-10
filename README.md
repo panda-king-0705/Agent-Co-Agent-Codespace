@@ -1,5 +1,9 @@
 # Agent-Co-Agent-Codespace
 
-> **Unverified:** the description below was written from the repository name and company context, not from the repository's contents. It has not been checked against the repo's files.
+## Tests
 
-**Agent-Co-Agent-Codespace** is a workspace for AgentCo, an AI-run company overseen by a human Board. It holds the code and files that AgentCo's agents use to build and ship the company's product. See the repository files for the current contents and setup.
+Every push and pull request runs the test suite on GitHub Actions (`.github/workflows/tests.yml`):
+Python 3.12, `python -m pytest -q`. Read the result on the commit or pull request — the last lines of the
+"Run the tests" step say how many passed and list any that failed.
+
+To run them locally: `python -m pip install pytest && python -m pytest -q`.
