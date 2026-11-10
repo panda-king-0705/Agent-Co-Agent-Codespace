@@ -8,9 +8,13 @@ Nothing here logs or prints the token or the account id.
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 from fx_scalper.broker import Broker, OrderResult, Quote
@@ -34,6 +38,51 @@ class OandaApiError(RuntimeError):
 
 class OrderRejectedError(RuntimeError):
     """Raised when OANDA accepts a request but does not fill it."""
+
+
+# OANDA returns at most 5000 candles per request.
+MAX_CANDLES_PER_REQUEST = 5000
+
+
+@dataclass(frozen=True)
+class Candle:
+    """One completed candle. Prices are mid; spread_pips is ask minus bid at the bar open."""
+
+    time: datetime  # bar open, timezone-aware UTC
+    open: float
+    high: float
+    low: float
+    close: float
+    spread_pips: Optional[float]
+    volume: int
+
+
+def _rfc3339(when: datetime) -> str:
+    if when.tzinfo is None:
+        raise ValueError("candle times must be timezone-aware (UTC)")
+    return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_oanda_time(text: str) -> datetime:
+    """Parse OANDA RFC3339 times, which carry nanoseconds (9 digits) that fromisoformat rejects."""
+    text = re.sub(r"(\.\d{6})\d+", r"\1", text.replace("Z", "+00:00"))
+    return datetime.fromisoformat(text).astimezone(timezone.utc)
+
+
+def _candle_from_payload(raw: Mapping, pip_size: float) -> Candle:
+    mid = raw["mid"]
+    spread = None
+    if "bid" in raw and "ask" in raw:
+        spread = round((float(raw["ask"]["o"]) - float(raw["bid"]["o"])) / pip_size, 4)
+    return Candle(
+        time=_parse_oanda_time(raw["time"]),
+        open=float(mid["o"]),
+        high=float(mid["h"]),
+        low=float(mid["l"]),
+        close=float(mid["c"]),
+        spread_pips=spread,
+        volume=int(raw.get("volume", 0)),
+    )
 
 
 def _urllib_transport(method: str, url: str, headers: Mapping[str, str], body: Optional[dict]):
@@ -88,6 +137,58 @@ class OandaPracticeBroker(Broker):
             message = str(payload.get("errorMessage", "request failed"))
             raise OandaApiError(status, message)
         return payload
+
+    # --- Market data --------------------------------------------------------
+
+    def get_candles(
+        self,
+        instrument: str,
+        granularity: str,
+        start: datetime,
+        end: datetime,
+        pip_size: float = 0.0001,
+    ) -> list[Candle]:
+        """Return completed candles with start <= open time < end, oldest first.
+
+        Requests mid, bid and ask (price=MBA) so each candle carries a real spread.
+        Pages through the range 5000 candles at a time. Incomplete candles are dropped.
+        """
+        if end <= start:
+            raise ValueError("end must be after start")
+        end_utc = end.astimezone(timezone.utc)
+        cursor = _rfc3339(start)
+        include_first = True
+        candles: list[Candle] = []
+        while True:
+            query = urllib.parse.urlencode(
+                {
+                    "granularity": granularity,
+                    "price": "MBA",
+                    "from": cursor,
+                    "count": MAX_CANDLES_PER_REQUEST,
+                    "includeFirst": "true" if include_first else "false",
+                }
+            )
+            payload = self._call("GET", f"/v3/instruments/{instrument}/candles?{query}")
+            page = payload.get("candles", [])
+            if not page:
+                break
+            for raw in page:
+                if not raw.get("complete", False):
+                    continue
+                candle = _candle_from_payload(raw, pip_size)
+                if candle.time >= end_utc:
+                    return candles
+                if not candles or candle.time > candles[-1].time:
+                    candles.append(candle)
+            last_time = _parse_oanda_time(page[-1]["time"])
+            if last_time >= end_utc or len(page) < MAX_CANDLES_PER_REQUEST:
+                break
+            next_cursor = _rfc3339(last_time)
+            if next_cursor == cursor and not include_first:
+                break  # no progress; guard against an endless loop
+            cursor, include_first = next_cursor, False
+        return candles
 
     # --- Broker interface -------------------------------------------------
 
