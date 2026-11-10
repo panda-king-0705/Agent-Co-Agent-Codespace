@@ -152,12 +152,16 @@ class OandaPracticeBroker(Broker):
 
         Requests mid, bid and ask (price=MBA) so each candle carries a real spread.
         Pages through the range 5000 candles at a time. Incomplete candles are dropped.
+
+        Every page is requested with includeFirst=true, so each page after the first starts with
+        the previous page's last candle (dropped as a duplicate). With includeFirst=false OANDA
+        returns only count-1 candles, which made every page after the first look like the end of
+        the data and cut each download off at 9,999 candles.
         """
         if end <= start:
             raise ValueError("end must be after start")
         end_utc = end.astimezone(timezone.utc)
         cursor = _rfc3339(start)
-        include_first = True
         candles: list[Candle] = []
         while True:
             query = urllib.parse.urlencode(
@@ -166,7 +170,7 @@ class OandaPracticeBroker(Broker):
                     "price": "MBA",
                     "from": cursor,
                     "count": MAX_CANDLES_PER_REQUEST,
-                    "includeFirst": "true" if include_first else "false",
+                    "includeFirst": "true",
                 }
             )
             payload = self._call("GET", f"/v3/instruments/{instrument}/candles?{query}")
@@ -185,9 +189,9 @@ class OandaPracticeBroker(Broker):
             if last_time >= end_utc or len(page) < MAX_CANDLES_PER_REQUEST:
                 break
             next_cursor = _rfc3339(last_time)
-            if next_cursor == cursor and not include_first:
+            if next_cursor == cursor:
                 break  # no progress; guard against an endless loop
-            cursor, include_first = next_cursor, False
+            cursor = next_cursor
         return candles
 
     # --- Broker interface -------------------------------------------------
