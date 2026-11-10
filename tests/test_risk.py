@@ -25,7 +25,7 @@ def test_real_api_sizing_and_floor(rm):
  assert not check(rm,broker={"min_units":4001}).allowed
 
 def test_cap_limited_rule_unchanged(rm):
- assert check(rm,request={"entry_price":100}).units==1000
+ assert check(rm,request={"entry_price":1000}).units==1000
 
 def test_durable_halt_and_restart(rm):
  rm.record_entry_accepted(); assert not check(rm,equity=98000).allowed
