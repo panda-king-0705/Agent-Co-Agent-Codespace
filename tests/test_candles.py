@@ -135,3 +135,68 @@ def test_written_csv_round_trips_into_backtest_reader(tmp_path):
     assert bars[0].close == pytest.approx(1.1001)
     assert bars[0].spread_pips == pytest.approx(1.2)
     assert bars[1].spread_pips is None
+
+
+# --- multi-instrument download (scripts/fetch_candles.py) --------------------
+
+from scripts import fetch_candles as fc
+
+
+class FakeBroker:
+    def __init__(self, fail=()):
+        self.calls = []
+        self.fail = set(fail)
+
+    def get_candles(self, instrument, granularity, start, end, pip_size=0.0001):
+        self.calls.append((instrument, granularity, start, end, pip_size))
+        if instrument in self.fail:
+            raise OandaApiError(400, "boom")
+        return [Candle(start, 1.1, 1.2, 1.0, 1.15, 1.0, 5)]
+
+
+def test_pip_size_is_hundredth_for_jpy_quoted_pairs():
+    assert fc.pip_size("EUR_USD") == 0.0001
+    assert fc.pip_size("GBP_NZD") == 0.0001
+    assert fc.pip_size("USD_JPY") == 0.01
+    assert fc.pip_size("chf_jpy") == 0.01
+
+
+def test_jpy_spread_measured_in_jpy_pips():
+    b, _ = broker([(200, {"candles": [raw_candle(T0, mid=150.000, spread=0.012)]})])
+    (c,) = b.get_candles("USD_JPY", "H1", T0, T0 + timedelta(hours=2), pip_size=fc.pip_size("USD_JPY"))
+    assert c.spread_pips == pytest.approx(1.2)
+
+
+def test_majors28_covers_each_currency_seven_times():
+    pairs = fc.parse_instruments("majors28")
+    assert len(pairs) == len(set(pairs)) == 28
+    for ccy in ["USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD"]:
+        assert sum(ccy in p.split("_") for p in pairs) == 7
+    assert fc.parse_instruments(" eur_usd, usd_jpy ") == ["EUR_USD", "USD_JPY"]
+
+
+def test_multi_download_writes_one_file_per_instrument_with_right_pip(tmp_path):
+    fake = FakeBroker()
+    fc.main(["--instruments", "EUR_USD,USD_JPY", "--granularity", "H1", "--start", "2010-01-01",
+             "--end", "2010-02-01", "--out-dir", str(tmp_path)], broker=fake)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["EUR_USD_H1.csv", "USD_JPY_H1.csv"]
+    assert [(c[0], c[4]) for c in fake.calls] == [("EUR_USD", 0.0001), ("USD_JPY", 0.01)]
+    assert fake.calls[0][2] == datetime(2010, 1, 1, tzinfo=timezone.utc)
+
+
+def test_skip_existing_and_failures_continue(tmp_path, capsys):
+    (tmp_path / "EUR_USD_H1.csv").write_text("time,open,high,low,close,spread_pips\n")
+    fake = FakeBroker(fail={"GBP_USD"})
+    with pytest.raises(SystemExit) as exc:
+        fc.main(["--instruments", "EUR_USD,GBP_USD,USD_JPY", "--granularity", "H1", "--start", "2010-01-01",
+                 "--end", "2010-02-01", "--out-dir", str(tmp_path), "--skip-existing"], broker=fake)
+    assert exc.value.code == 1
+    assert [c[0] for c in fake.calls] == ["GBP_USD", "USD_JPY"]
+    assert (tmp_path / "USD_JPY_H1.csv").exists() and not (tmp_path / "GBP_USD_H1.csv").exists()
+    assert "1 failure(s): GBP_USD" in capsys.readouterr().out
+
+
+def test_write_leaves_no_partial_file(tmp_path):
+    out = tmp_path / "X_H1.csv"
+    fc.write_candles([Candle(T0, 1.1, 1.2, 1.0, 1.15, None, 1)], out)
+    assert [p.name for p in tmp_path.iterdir()] == ["X_H1.csv"]
