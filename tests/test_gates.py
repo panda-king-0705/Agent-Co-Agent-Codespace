@@ -145,7 +145,7 @@ def test_missing_blackout_file_means_no_blackout(tmp_path):
 
 
 def test_unreadable_blackout_data_fails_closed(tmp_path):
+    s = _settings(tmp_path)
     path = tmp_path / "blackout.json"
     path.write_text("not json", encoding="utf-8")
-    s = _settings(tmp_path, blackout_file=str(path))
     assert entry_allowed(_utc(*MONDAY, 10, 0, 0), s) is False

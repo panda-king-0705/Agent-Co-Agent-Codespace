@@ -15,7 +15,7 @@ Scope: every order the fx-scalper strategy places, on any account it trades.
 | MAX_TRADES_PER_DAY | 20 | POLICY | Maximum number of new entry orders opened in one session. |
 | MAX_OPEN_POSITIONS | 3 | POLICY | Maximum number of positions open at the same time, across all instruments. |
 | spread_pips | 1.0 | ASSUMPTION | Planning value for the average spread at entry, in pips. Replace with measured spread before go-live. |
-| commission_pips | 0.5 | ASSUMPTION | Planning value for round-trip commission expressed in pips. Replace with the commission schedule once confirmed. |
+| commission_pips | 0.5 | ASSUMPTION | Planning value: 0.5 pip per round trip, charged once per round trip. Replace with the commission schedule once confirmed. |
 | slippage_pips | 0.5 | ASSUMPTION | Planning value for expected execution slippage, in pips. Replace with measured fill data. |
 | STOP_LOSS_PIPS | per order (no fixed value) | ORDER INPUT (section 2) | Stop-loss distance in pips for each entry. Must be strictly greater than break_even_pips (section 4). Source: risk.md §2, §7 step 5. |
 | LOT_STEP, MIN_UNITS | read at runtime | BROKER INPUT | Broker lot-size step and minimum units. Not quoted in this document. Source: risk.md §2. NOT IN T-313 (flag F5). |

@@ -70,11 +70,10 @@ Stop and target are fixed in pips at fill. The spec does not use trailing stops.
 
 ## 9. Costs: assumptions (not verified)
 
-These are assumptions. Each must be checked against real practice data and the broker's published terms before any conclusion is drawn.
-
-- **Spread — ASSUMPTION.** Backtest fallback is 1.0 pip (`ASSUMED_SPREAD_PIPS = 1.0`), applied as half-spread on each side of each fill. Live fills use the actual bid/ask.
-- **Slippage — ASSUMPTION.** 0.5 pip adverse on every market fill (entries, time exits, crossover exits, forced flat) and on stop-loss fills. Take-profit fills are assumed at the target price with no slippage. Config: `SLIPPAGE_PIPS = 0.5`.
-- **Commission — ASSUMPTION.** 0.5 pip. This is the planning value from Finance's docs/fx-scalper/risk.md (`commission_pips = 0.5`), used in its break-even calculation, and it is the single value used by spec, risk.md and code. Config: `COMMISSION_PIPS = 0.5`. It is a planning input, not a quoted broker fee: verify against the OANDA fee schedule before relying on it and update risk.md and this spec together. Open point: risk.md defines it as a round-trip figure, while `fx_scalper/executor.py` applies it per fill (2 × value per round trip); see the PR #3 description.
+These are assumptions and must be checked against practice data and broker terms before conclusions.
+- **Spread — ASSUMPTION.** Backtest fallback 1.0 pip; live uses actual bid/ask.
+- **Slippage — ASSUMPTION.** 0.5 pip adverse on market and stop fills; take-profit at target without slippage.
+- **Commission — ASSUMPTION.** 0.5 pip planning value from risk.md, charged once per round trip. It is not a quoted broker fee; verify against OANDA terms before relying on it and update risk.md and this spec together.
 
 ## 10. Position limits and sizing (refer to risk.md)
 
