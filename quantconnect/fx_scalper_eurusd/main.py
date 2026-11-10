@@ -28,8 +28,8 @@ Parameters (QuantConnect project parameters, used for robustness sweeps):
   stop_pips, target_pips, max_hold_minutes, session_start_hour, session_end_hour,
   max_spread_pips, slippage_pips, commission_pips_round_trip
 
-Results: a summary in the log and runtime statistics, and every trade in the Object Store
-at fx_scalper/eurusd_trades.json.
+Results: summary statistics only (trade counts, win rate, pips per trade). QuantConnect's terms
+forbid logging dataset values (prices, spreads, quotes), raw or derived, so none are logged.
 """
 
 PIP = 0.0001
@@ -181,7 +181,7 @@ class FxScalperEurUsd(QCAlgorithm):
             self.skipped["size"] += 1
             return
 
-        self.position = {"direction": direction, "units": units, "spread_at_signal": spread_pips}
+        self.position = {"direction": direction, "units": units}
         self.trades_today += 1
         self.market_order(self.symbol, direction * units, tag="entry")
 
@@ -253,10 +253,7 @@ class FxScalperEurUsd(QCAlgorithm):
             "exit_time": str(self.time),
             "direction": p["direction"],
             "units": p["units"],
-            "entry_price": p["entry_price"],
-            "exit_price": exit_price,
             "reason": reason,
-            "spread_at_signal_pips": round(p["spread_at_signal"], 2),
             "gross_pips_after_spread": round(gross, 2),
             "net_pips": round(gross - self.commission_rt, 2),
             "minutes_held": round((self.time - p["entry_time"]).total_seconds() / 60, 1),
@@ -307,7 +304,6 @@ class FxScalperEurUsd(QCAlgorithm):
             "avg_loss_pips": round(sum(losses) / len(losses), 2) if losses else 0.0,
             "expectancy_pips": round(sum(x["net_pips"] for x in t) / n, 3) if n else 0.0,
             "net_pips": round(sum(x["net_pips"] for x in t), 1),
-            "avg_spread_at_signal_pips": round(sum(x["spread_at_signal_pips"] for x in t) / n, 2) if n else 0.0,
             "by_exit_reason": by_reason,
             "reconciliations": self.reconciliations,
             "skipped_entries": self.skipped,
@@ -327,10 +323,5 @@ class FxScalperEurUsd(QCAlgorithm):
         self.debug("FX_SCALPER_EXITS " + json.dumps(by_reason))
         self.debug("FX_SCALPER_SKIPPED " + json.dumps(self.skipped))
         self.debug("FX_SCALPER_PARAMS " + json.dumps(summary["parameters"]))
-        self.log("FX_SCALPER_FULL " + json.dumps(summary))
         for key in ("trades", "win_rate_pct", "expectancy_pips", "net_pips", "reconciliations"):
             self.set_runtime_statistic(key, str(summary[key]))
-        try:
-            self.object_store.save("fx_scalper/eurusd_trades.json", json.dumps({"summary": summary, "trades": t}))
-        except Exception as exc:  # e.g. no Object Store write permission on this account
-            self.debug(f"Object Store save skipped: {exc}")
