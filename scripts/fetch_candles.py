@@ -7,7 +7,7 @@ Usage:
     # many instruments, one file each: data/<INSTRUMENT>_<GRANULARITY>.csv
     python -m scripts.fetch_candles --instruments majors28 --granularity H1 --start 2010-01-01 --end 2026-11-01 --skip-existing
 
-Credentials come only from OANDA_API_TOKEN and OANDA_ACCOUNT_ID in the environment.
+Credentials: OANDA_API_TOKEN and OANDA_ACCOUNT_ID from the environment, or from .env (see .env.example).
 Practice host only. Output columns: time (ISO UTC), open, high, low, close (mid), spread_pips
 (ask minus bid at the bar open, in the instrument's own pips: 0.01 for JPY-quoted pairs,
 0.0001 otherwise), which is what `python -m scripts.backtest` reads.

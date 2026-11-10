@@ -1,8 +1,10 @@
 """Runtime settings for the FX scalper (spec sections 14 and 15).
 
-Credentials are read only from environment variables. There are no defaults
-for the token or account id, and nothing is read from files. Error messages
-name the variable but never print its value.
+Credentials come from environment variables or, failing that, from a `.env` file at the
+repository root (git ignores it; see .env.example). A variable set in the environment
+always wins over the file. Only the two credential variables are read from `.env`:
+live mode can never be switched on from a file. There are no defaults for the token or
+account id. Error messages name the variable but never print its value.
 
 Strategy parameters carry the defaults from docs/fx-scalper/spec.md section 14.
 They are plain fields with defaults, so load_settings() needs no extra input.
@@ -13,12 +15,16 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 
 PRACTICE_HOST = "https://api-fxpractice.oanda.com"
 
 ENV_TOKEN = "OANDA_API_TOKEN"
 ENV_ACCOUNT_ID = "OANDA_ACCOUNT_ID"
 ENV_LIVE_MODE = "FX_SCALPER_LIVE_MODE"
+
+DOTENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+DOTENV_KEYS = (ENV_TOKEN, ENV_ACCOUNT_ID)
 
 
 class SettingsError(RuntimeError):
@@ -60,14 +66,46 @@ def _required(env: Mapping[str, str], name: str) -> str:
     return value.strip()
 
 
-def load_settings(env: Mapping[str, str] | None = None) -> Settings:
-    """Build Settings from the environment.
+def read_dotenv(path: str | Path) -> dict[str, str]:
+    """Credential variables from a .env file: KEY=VALUE lines, # comments, optional quotes.
 
-    `env` defaults to os.environ; pass a mapping in tests.
-    Live mode is on only when FX_SCALPER_LIVE_MODE is exactly "true".
+    A missing file gives {}. Keys other than DOTENV_KEYS are ignored. Malformed lines are
+    skipped silently so a value can never end up in an error message.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return {}
+    values = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        if key.startswith("export "):
+            key = key[len("export "):].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        if key in DOTENV_KEYS:
+            values[key] = value
+    return values
+
+
+def load_settings(env: Mapping[str, str] | None = None, dotenv_path: str | Path | None = None) -> Settings:
+    """Build Settings from the environment, falling back to `.env` for the credentials.
+
+    With `env` given (tests), only that mapping is used unless `dotenv_path` is passed too.
+    Otherwise os.environ is used, with DOTENV_PATH filling in credentials it doesn't set.
+    Live mode is on only when FX_SCALPER_LIVE_MODE is exactly "true" in the environment.
     Any other value, including unset, leaves live mode off.
     """
-    source = os.environ if env is None else env
+    environment = os.environ if env is None else env
+    path = DOTENV_PATH if env is None and dotenv_path is None else dotenv_path
+    source = dict(environment)
+    if path is not None:
+        for key, value in read_dotenv(path).items():
+            if not source.get(key, "").strip():
+                source[key] = value
     token = _required(source, ENV_TOKEN)
     account_id = _required(source, ENV_ACCOUNT_ID)
     live_mode = source.get(ENV_LIVE_MODE) == "true"

@@ -21,3 +21,9 @@ python -m scripts.calendar_report data/calendar/forex_factory_cache.csv --impact
 `carry.calendar.load_calendar` returns UTC-timed releases with parsed values, a score category and
 the event's direction. About a third of rows in the file have no release time; the loader restores
 them from each event's usual local release time and marks them `imputed` (see the module docstring).
+
+## OANDA credentials
+
+Set `OANDA_API_TOKEN` and `OANDA_ACCOUNT_ID` in the shell, or copy `.env.example` to `.env` and fill
+them in. `.env` is ignored by git (this repository is public; never commit it). Shell variables win
+over `.env`, and `.env` can't switch on live mode.
