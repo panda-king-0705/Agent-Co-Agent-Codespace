@@ -42,8 +42,7 @@ class SimulatedExecutor:
     """Entries require completed-bar signal evidence, session gates and risk approval.
 
     Commission defaults to risk.Config's planning value PER ROUND TRIP (charged once,
-    on exit). The spec's zero commission conflicts with that value; no reconciliation
-    is claimed.
+    on exit).
     Equity is initial/external equity plus this executor's realized net P&L.
     """
     def __init__(self, settings, risk, broker_inputs, equity, log,
