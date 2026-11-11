@@ -4,7 +4,8 @@ Usage:
     python -m scripts.run_backtest [--start 2010-01-01] [--end 2026-11-01]
         [--score-threshold 3] [--stop-atr 1.5] [--trail atr|swing] [--entry-hours 1|4]
         [--blackout-hours 6] [--rank-by policy|yield2y] [--min-rate-gap 0] [--split 2018-07-01]
-        [--skip-gates score,vix]
+        [--skip-gates score,vix] [--take-profit-r 3] [--close-fraction 0.75] [--trail-atr 1]
+        [--trail-always] [--trail-from-entry]
         [--out logs/backtest/baseline]
 
 --entry-hours 1 (default) enters and exits on 1H bars with the 4H trend; 4 enters and exits
@@ -13,6 +14,9 @@ on 4H bars with the daily trend (stop, target and trail then use the daily ATR).
 yield is missing); --min-rate-gap only enters pairs whose ranked levels differ by at least that
 many percentage points. --split also prints (and writes to summary.txt) the summary for trades
 entered before and from that date, to keep a tuning period apart from a holdout period.
+Exits: --take-profit-r sets the target in R; at the target --close-fraction is closed and the
+rest trails --trail-atr x trend-bar ATR (or the last swing) in a strong trend, or always with
+--trail-always. --trail-from-entry drops the target and trails from the fill.
 --skip-gates lists gates (score, vix, cot, yield_spread, commodity, soft, rate_gap) that are
 still logged but no longer required to enter.
 --blackout-hours 0 turns the news blackout off: entries are allowed near red events and trades stay open through them.
@@ -54,6 +58,11 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--rank-by", choices=("policy", "yield2y"), default="policy")
     parser.add_argument("--min-rate-gap", type=float, default=0.0)
     parser.add_argument("--split", default=None)
+    parser.add_argument("--take-profit-r", type=float, default=3.0)
+    parser.add_argument("--close-fraction", type=float, default=0.75)
+    parser.add_argument("--trail-atr", type=float, default=1.0)
+    parser.add_argument("--trail-always", action="store_true")
+    parser.add_argument("--trail-from-entry", action="store_true")
     parser.add_argument("--skip-gates", default="", help="comma-separated gates not required to enter")
     parser.add_argument("--out", default="logs/backtest/baseline")
     args = parser.parse_args(argv)
@@ -62,12 +71,16 @@ def main(argv: list[str] | None = None) -> dict:
     skip = tuple(g for g in args.skip_gates.split(",") if g)
     data = MarketData.load(args.macro_dir)
     params = Params(score_threshold=args.score_threshold, stop_atr=args.stop_atr, trail=args.trail, entry_hours=args.entry_hours,
-                    blackout_hours=args.blackout_hours)
+                    blackout_hours=args.blackout_hours, take_profit_r=args.take_profit_r,
+                    close_fraction_at_target=args.close_fraction, trail_atr=args.trail_atr,
+                    trail_always=args.trail_always, trail_from_entry=args.trail_from_entry)
     backtest = Backtest(Strategy(data, params.score_threshold, args.rank_by, args.min_rate_gap, skip), args.candles_dir, params, red_events(args.macro_dir))
     result = backtest.run(utc_day(args.start), utc_day(args.end))
     summary = write_result(result, args.out)
     print(f"{args.start} .. {args.end}  threshold {params.score_threshold}  stop {params.stop_atr} ATR  trail {params.trail}  "
-          f"entries {params.entry_hours}H  blackout {params.blackout_hours:g}h  rank {args.rank_by}  min gap {args.min_rate_gap:g}  skip {','.join(skip) or '-'}")
+          f"entries {params.entry_hours}H  blackout {params.blackout_hours:g}h  rank {args.rank_by}  min gap {args.min_rate_gap:g}  skip {','.join(skip) or '-'}  "
+          f"target {params.take_profit_r:g}R  close {params.close_fraction_at_target:g}  trail {params.trail_atr:g}x"
+          f"{'  always-trail' if params.trail_always else ''}{'  trail-from-entry' if params.trail_from_entry else ''}")
     print(line(summary))
     extra = {"rank_by": args.rank_by, "min_rate_gap": args.min_rate_gap, "skip_gates": ",".join(skip)}
     if args.split:

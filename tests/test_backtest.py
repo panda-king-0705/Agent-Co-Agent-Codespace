@@ -223,6 +223,28 @@ def test_manage_target_stop_and_blackout():
     assert usd2.remaining == 1.0 and not off.event_behind(("USD",), utc(2024, 1, 2, 14))  # blackout off
 
 
+def test_trail_from_entry_and_trail_always():
+    t0 = utc(2024, 1, 1)
+    flat = [bar(t0 + timedelta(hours=h), 100, 100.25, 99.75, 100, 0.0) for h in range(80)]
+    up = bar(t0 + timedelta(hours=80), 100, 105, 100, 104.8, 0.0)
+    down = bar(t0 + timedelta(hours=81), 104.8, 104.8, 103.5, 103.6, 0.0)
+    p = PairData("AUD_JPY", flat + [up, down])
+    mk = lambda: Trade("AUD_JPY", "AUD", "JPY", 1, t0, 100.0, 1.0, 99.0, 103.0, 0.01, 4, 2, best=100.0)
+
+    trailing = Backtest(FakeStrategy(make_data()), ".", Params(trail_from_entry=True, trail_atr=2.0), {})
+    trade = mk()
+    trade.trailing = True
+    trailing._manage(trade, p, 80, up.time)
+    assert trade.remaining == 1.0 and trade.stop == pytest.approx(104.0)  # 105 - 2 x 0.5 ATR, no target
+    trailing._manage(trade, p, 81, down.time)
+    assert trade.exit_reason == "trail" and trade.realized_r == pytest.approx(4.0)
+
+    always = Backtest(FakeStrategy(make_data()), ".", Params(trail_always=True, close_fraction_at_target=0.5), {})
+    trade = mk()
+    always._manage(trade, p, 80, up.time)  # no strong trend data, but always trail
+    assert trade.remaining == pytest.approx(0.5) and trade.trailing and trade.stop >= 100.0
+
+
 def test_drawdown_brake_and_summary():
     from carry.backtest import Result
 

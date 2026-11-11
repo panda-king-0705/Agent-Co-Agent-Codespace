@@ -9,10 +9,16 @@ For the pairs allowed that day, the entry rules are checked on each entry bar as
 a signal fills at the next entry bar's open. Fills are at bid/ask: mid +/- half the spread.
 
 Per trade:
-- Stop = stop_atr x trend-bar ATR(14) from the fill (that distance is 1R); take-profit at 3R.
-- At 3R, if price is more than strong_trend_atr x trend-bar ATR beyond the trend-bar 200 EMA,
-  close 75% and trail the rest (1 x trend-bar ATR behind the best price, or the last
-  trend-bar swing); otherwise close it all. If a bar touches both stop and target, the stop is assumed hit first.
+- Stop = stop_atr x trend-bar ATR(14) from the fill (that distance is 1R); take-profit at
+  take_profit_r (3R).
+- At the target, if price is more than strong_trend_atr x trend-bar ATR beyond the trend-bar
+  200 EMA (or always, with trail_always), close close_fraction_at_target (75%) and trail the
+  rest (trail_atr x trend-bar ATR behind the best price, or the last trend-bar swing), with
+  the stop at break-even or better; otherwise close it all. If a bar touches both stop and
+  target, the stop is assumed hit first.
+- trail_from_entry: no target; the stop trails trail_atr x trend-bar ATR behind the best
+  price from the fill on, never looser than the initial stop.
+- The trend bar used while managing entry bar i is the last one complete when bar i opens.
 - Closed at the bar's open: when a red event for either currency is within the blackout
   window ahead, or when the carry ranking no longer has the pair's currencies in the
   top 3 / bottom 3. Stop to break-even if in profit when VIX turns risk-off, the score gap
@@ -47,6 +53,9 @@ class Params:
     strong_trend_atr: float = 2.0
     close_fraction_at_target: float = 0.75
     trail: str = "atr"  # atr | swing
+    trail_atr: float = 1.0  # ATR trail distance, in trend-bar ATRs
+    trail_always: bool = False  # at the target, always partly close and trail (not only in strong trends)
+    trail_from_entry: bool = False  # no target: trail from the fill
     risk_per_trade: float = 0.01
     brake_risk: float = 0.005
     brake_drawdown: float = 0.05
@@ -384,8 +393,10 @@ class Backtest:
         entry = bar.open + c.side * bar.spread / 2
         r = p.stop_atr * atr4
         risk = p.brake_risk if equity < (1 - p.brake_drawdown) * peak else p.risk_per_trade
-        return Trade(c.instrument, c.high, c.low, c.side, t, entry, r, entry - c.side * r, entry + c.side * p.take_profit_r * r,
-                     risk, c.score_diff, c.soft_count, best=entry)
+        trade = Trade(c.instrument, c.high, c.low, c.side, t, entry, r, entry - c.side * r,
+                      entry + c.side * p.take_profit_r * r, risk, c.score_diff, c.soft_count, best=entry)
+        trade.trailing = p.trail_from_entry
+        return trade
 
     def _manage(self, trade: Trade, pd: PairData, i: int, t: datetime) -> None:
         p = self.params
@@ -412,9 +423,9 @@ class Backtest:
         if s * (adverse - trade.stop) <= 0:
             accrue_and_close(trade.stop, "trail" if trade.trailing else "stop", trade.remaining)
             return
+        k = pd.htf_at(i - 1) if i > 0 else None  # trend bars complete when this bar opened
         if not trade.trailing and s * (favourable - trade.target) >= 0:
-            k = pd.htf_at(i)
-            strong = (
+            strong = p.trail_always or (
                 k is not None and pd.htf_ema200[k] is not None and pd.htf_atr[k] is not None
                 and s * (pd.htf[k].close - pd.htf_ema200[k]) > p.strong_trend_atr * pd.htf_atr[k]
             )
@@ -427,9 +438,8 @@ class Backtest:
             trade.stop = max(trade.stop, trade.entry) if s > 0 else min(trade.stop, trade.entry)
         if trade.trailing:
             trade.best = max(trade.best, favourable) if s > 0 else min(trade.best, favourable)
-            k = pd.htf_at(i)
             if p.trail == "atr" and k is not None and pd.htf_atr[k] is not None:
-                level = trade.best - s * pd.htf_atr[k]
+                level = trade.best - s * p.trail_atr * pd.htf_atr[k]
             elif k is not None:
                 swings = pd.htf_lows[k] if s > 0 else pd.htf_highs[k]
                 level = (pd.htf[swings[-1]].low if s > 0 else pd.htf[swings[-1]].high) if swings else trade.stop
