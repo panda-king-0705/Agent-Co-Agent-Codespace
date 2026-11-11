@@ -79,11 +79,18 @@ workbook by hand into `data/macro/yields/manual/` (see `carry.yields.MANUAL`).
 
 ```
 python -m scripts.run_backtest [--start 2010-01-01] [--end 2026-11-01] [--score-threshold 3] [--stop-atr 1.5] [--trail atr|swing] [--entry-hours 1|4]
+    [--blackout-hours 6] [--rank-by policy|yield2y] [--min-rate-gap 0] [--split 2018-07-01]
 ```
 
 `--entry-hours 1` (default) takes entries and exits on 1H bars with the trend, stop and trail on 4H bars.
 `--entry-hours 4` moves everything up one timeframe: entries and exits on 4H bars, trend, stop and
 trail on daily bars (UTC days, Sunday evening joined to Monday).
+`--blackout-hours 0` turns the news blackout off. `--rank-by yield2y` ranks currencies by 2-year
+yields (policy rate where a yield is missing) and `--min-rate-gap` only enters pairs whose levels
+differ by at least that many percentage points.
+
+To tune without fitting the whole history, tune on an early period (`--end 2018-07-01`) and check
+the chosen settings once on the rest; `--split 2018-07-01` reports both periods of a full run.
 
 Runs the founder's rules on the local H1 files and `data/macro/` (fetch them with the scripts above)
 and writes `trades.csv`, `gates.csv` (every candidate pair per day and which gates passed),

@@ -103,6 +103,38 @@ def test_ranking_and_vix_gate():
     assert s.soft_count(when) == 2
 
 
+def test_yield_ranking_and_rate_gap():
+    when = utc(2024, 3, 21)
+    yields = {"JPY": daily([6.0] * 80), "NZD": daily([5.5] * 70)}  # NZD's last yield is stale
+    s = Strategy(make_data(yields=yields), rank_by="yield2y")
+    assert s.ranking(when)[:2] == ["JPY", "USD"]  # JPY by its yield; NZD keeps its policy rate
+    assert s.ranking(when)[-1] == "CHF"
+    gap = Strategy(make_data(), min_rate_gap=3.5)
+    gap.expansion = lambda currency, when: False  # no indicator data in this test
+    gap.score = lambda currency, when, expansion: 0
+    day = gap.day(when)
+    passed = {(c.high, c.low): c.gates["rate_gap"] for c in day.candidates}
+    assert passed[("USD", "JPY")] and not passed[("GBP", "CHF")]  # 4.9 >= 3.5, 3.0 < 3.5
+    with pytest.raises(ValueError):
+        Strategy(make_data(), rank_by="other")
+
+
+def test_period_summary():
+    from carry.backtest import Result
+
+    def tr(day, r):
+        t = Trade("AUD_JPY", "AUD", "JPY", 1, utc(2024, 1, day), 100.0, 1.0, 99.0, 103.0, 0.01, 4, 2)
+        t.realized_r, t.exit_time = r, utc(2024, 1, day, 12)
+        return t
+
+    res = Result(Params(), [tr(1, -1.0), tr(2, 3.0), tr(3, -1.0)], [], [])
+    before = res.summary(until=utc(2024, 1, 2))
+    after = res.summary(since=utc(2024, 1, 2))
+    assert before["trades"] == 1 and before["final_equity"] == pytest.approx(0.99)
+    assert after["trades"] == 2 and after["total_r"] == pytest.approx(2.0)
+    assert after["max_drawdown"] == pytest.approx(0.01)
+
+
 def test_cot_yield_and_commodity_gates():
     when = utc(2024, 3, 21)
     cot = {"AUD": daily([1.0, 2.0, 3.0] + [3.0] * 77), "JPY": daily([5.0] * 80)}
@@ -197,3 +229,10 @@ def test_drawdown_brake_and_summary():
     r = Result(Params(), [t], [(utc(2024, 1, 1), 1.0), (utc(2024, 2, 1), 0.92), (utc(2024, 3, 1), 1.1)], [])
     assert r.summary()["max_drawdown"] == pytest.approx(0.08)
     assert isinstance(DayContext(utc(2024, 1, 1), [], {}, {}, []).top(), list)
+
+
+def test_run_backtest_script_imports():
+    import scripts.run_backtest as rb
+
+    assert "trades 0" in rb.line({"trades": 0, "win_rate": 0.0, "avg_r": 0.0, "total_r": 0.0,
+                                  "max_drawdown": 0.0, "final_equity": 1.0, "passes": False})
