@@ -53,10 +53,24 @@ def load_h1(path: str | Path, instrument: str) -> list[Bar]:
 
 def resample_4h(bars: Sequence[Bar]) -> list[Bar]:
     """Group H1 bars into 4H bars by UTC block. A block's bar is complete at block start + 4h."""
+    return resample(bars, 4)
+
+
+def resample(bars: Sequence[Bar], hours: int) -> list[Bar]:
+    """Group bars into `hours`-long bars on UTC boundaries (hours divides 24, or 24 for daily).
+
+    Daily bars run 00:00-24:00 UTC, except that Sunday's few evening bars join Monday's
+    (FX opens Sunday evening UTC; a separate Sunday bar would be a stub). A daily bar's
+    time is its UTC midnight; a Monday bar holding Sunday's bars still has Monday's date.
+    """
     out: list[Bar] = []
     block = None
     for b in bars:
-        start = b.time.replace(hour=b.time.hour - b.time.hour % 4, minute=0, second=0, microsecond=0)
+        if hours >= 24:
+            day = b.time.replace(hour=0, minute=0, second=0, microsecond=0)
+            start = day + timedelta(days=1) if day.weekday() == 6 else day
+        else:
+            start = b.time.replace(hour=b.time.hour - b.time.hour % hours, minute=0, second=0, microsecond=0)
         if block is None or start != block[0]:
             if block is not None:
                 out.append(Bar(*block))

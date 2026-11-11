@@ -7,7 +7,7 @@ import pytest
 from carry.backtest import Backtest, PairData, Params, Trade, entry_signal
 from carry.macro import Observation, Series
 from carry.strategy import Candidate, DayContext, MarketData, Strategy, instrument_for
-from carry.ta import Bar, atr, ema, macd_histogram, pivots, resample_4h, rsi, sma
+from carry.ta import Bar, atr, ema, macd_histogram, pivots, resample, resample_4h, rsi, sma
 
 
 def utc(*args):
@@ -46,6 +46,15 @@ def test_atr_and_resample():
     assert [b.time.hour for b in four] == [0, 4]
     assert four[0].high == pytest.approx(1.04) and four[1].high == pytest.approx(1.08)
     assert atr(four, 2)[1] == pytest.approx((0.04 + 0.08) / 2)
+
+
+def test_daily_resample_joins_sunday_to_monday():
+    sunday = utc(2024, 1, 7, 21)  # FX opens Sunday evening UTC
+    bars = [bar(sunday + timedelta(hours=h), 1.0, 1.0 + 0.01 * h, 1.0, 1.0) for h in range(30)]
+    days = resample(bars, 24)
+    assert [d.time for d in days] == [utc(2024, 1, 8), utc(2024, 1, 9)]
+    assert days[0].open == 1.0 and days[0].high == pytest.approx(1.26)  # Sunday 21:00 .. Monday 23:00
+    assert resample(bars, 4)[0].time == utc(2024, 1, 7, 20)
 
 
 def test_pivots_confirm_after_width_bars():
@@ -132,6 +141,18 @@ def test_entry_signal_needs_trend_direction():
     longs = [i for i in range(900, 1199) if entry_signal(p, i, 1)]
     shorts = [i for i in range(900, 1199) if entry_signal(p, i, -1)]
     assert longs and not shorts  # never against the 4H trend
+
+
+def test_four_hour_entries_use_daily_trend():
+    t0 = utc(2024, 1, 1)
+    h1 = trending_pair(n=24 * 300).bars
+    p = PairData("AUD_JPY", resample(h1, 4), bar_hours=4, trend_hours=24)
+    i = len(p.bars) - 1
+    k = p.htf_at(i)
+    assert p.bars[i].time + timedelta(hours=4) >= p.htf[k].time + timedelta(days=1)  # trend bar complete
+    assert p.htf[k + 1].time + timedelta(days=1) > p.bars[i].time + timedelta(hours=4) if k + 1 < len(p.htf) else True
+    assert p.trend(i, 1) is not None and p.trend(i, -1) is None  # daily uptrend
+    assert t0 <= p.bars[0].time
 
 
 class FakeStrategy:
