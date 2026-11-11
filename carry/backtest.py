@@ -1,14 +1,18 @@
-"""Hourly backtest engine for the carry strategy.
+"""Backtest engine for the carry strategy.
 
 Each UTC day the Strategy decides which pairs may be traded (carry rank, score, gates).
-Each hour, for those pairs, the 1H/4H entry rules are checked on the bar that just closed;
-a signal fills at the next bar's open. Fills are at bid/ask: mid +/- half the spread.
+Two timeframe set-ups (Params.entry_hours):
+- 1 (default): entries and exits on 1H bars, trend, stop and trail on 4H bars;
+- 4: entries and exits on 4H bars, trend, stop and trail on daily bars.
+Below, "entry bar" is the 1H or 4H bar and "trend bar" the 4H or daily bar.
+For the pairs allowed that day, the entry rules are checked on each entry bar as it closes;
+a signal fills at the next entry bar's open. Fills are at bid/ask: mid +/- half the spread.
 
 Per trade:
-- Stop = stop_atr x 4H ATR(14) from the fill (that distance is 1R); take-profit at 3R.
-- At 3R, if price is more than strong_trend_atr x 4H ATR beyond the 4H 200 EMA, close 75%
-  and trail the rest (1 x 4H ATR behind the best price, or the last 4H swing); otherwise
-  close it all. If a bar touches both stop and target, the stop is assumed hit first.
+- Stop = stop_atr x trend-bar ATR(14) from the fill (that distance is 1R); take-profit at 3R.
+- At 3R, if price is more than strong_trend_atr x trend-bar ATR beyond the trend-bar 200 EMA,
+  close 75% and trail the rest (1 x trend-bar ATR behind the best price, or the last
+  trend-bar swing); otherwise close it all. If a bar touches both stop and target, the stop is assumed hit first.
 - Closed at the bar's open: when a red event for either currency is within the blackout
   window ahead, or when the carry ranking no longer has the pair's currencies in the
   top 3 / bottom 3. Stop to break-even if in profit when VIX turns risk-off, the score gap
@@ -30,7 +34,7 @@ from pathlib import Path
 from typing import Optional
 
 from carry.strategy import GATES, Candidate, DayContext, Strategy
-from carry.ta import Bar, atr, ema, load_h1, macd_histogram, resample_4h, rsi, swing_history
+from carry.ta import Bar, atr, ema, load_h1, macd_histogram, resample, rsi, swing_history
 
 HOUR = timedelta(hours=1)
 
@@ -50,40 +54,46 @@ class Params:
     signal_lookback: int = 3  # bars within which location and momentum may occur
     swap_markup: float = 0.01  # annual, taken off the rate differential
     max_new_per_day: int = 1
+    entry_hours: int = 1  # 1: 1H entries / 4H trend; 4: 4H entries / daily trend
 
 
 class PairData:
-    """One instrument's H1 bars with every indicator precomputed."""
+    """One instrument's entry bars with every indicator precomputed, and its trend bars.
 
-    def __init__(self, instrument: str, bars: list[Bar]):
+    `bars` are the entry bars (`bar_hours` long); trend bars are built from them
+    (`trend_hours` long: 4 for 1H entries, 24 for 4H entries).
+    """
+
+    def __init__(self, instrument: str, bars: list[Bar], bar_hours: int = 1, trend_hours: int = 4):
         self.instrument = instrument
         self.bars = bars
+        self.bar_length = timedelta(hours=bar_hours)
         self.index = {b.time: i for i, b in enumerate(bars)}
         closes = [b.close for b in bars]
         self.ema50 = ema(closes, 50)
         self.rsi = rsi(closes, 14)
         self.macd = macd_histogram(closes)
         self.highs, self.lows = swing_history(bars)
-        self.h4 = resample_4h(bars)
-        h4_closes = [b.close for b in self.h4]
-        self.h4_ema200 = ema(h4_closes, 200)
-        self.h4_atr = atr(self.h4, 14)
-        self.h4_highs, self.h4_lows = swing_history(self.h4)
-        self._h4_done = [b.time + timedelta(hours=4) for b in self.h4]
+        self.htf = resample(bars, trend_hours)
+        htf_closes = [b.close for b in self.htf]
+        self.htf_ema200 = ema(htf_closes, 200)
+        self.htf_atr = atr(self.htf, 14)
+        self.htf_highs, self.htf_lows = swing_history(self.htf)
+        self._htf_done = [b.time + timedelta(hours=trend_hours) for b in self.htf]
 
-    def h4_at(self, i: int) -> Optional[int]:
-        """Index of the last 4H bar complete when H1 bar i closes."""
-        closed = self.bars[i].time + HOUR
-        k = bisect_left(self._h4_done, closed + timedelta(microseconds=1)) - 1
+    def htf_at(self, i: int) -> Optional[int]:
+        """Index of the last trend bar complete when entry bar i closes."""
+        closed = self.bars[i].time + self.bar_length
+        k = bisect_left(self._htf_done, closed + timedelta(microseconds=1)) - 1
         return k if k >= 0 else None
 
     def trend(self, i: int, side: int) -> Optional[tuple[float, float, float]]:
-        """(4H close, 4H EMA200, 4H ATR) at H1 bar i if the 4H trend is in `side`'s direction."""
-        k = self.h4_at(i)
-        if k is None or self.h4_ema200[k] is None or self.h4_atr[k] is None:
+        """(close, EMA200, ATR) of the trend bar at entry bar i if its trend is in `side`'s direction."""
+        k = self.htf_at(i)
+        if k is None or self.htf_ema200[k] is None or self.htf_atr[k] is None:
             return None
-        close, line = self.h4[k].close, self.h4_ema200[k]
-        return (close, line, self.h4_atr[k]) if side * (close - line) > 0 else None
+        close, line = self.htf[k].close, self.htf_ema200[k]
+        return (close, line, self.htf_atr[k]) if side * (close - line) > 0 else None
 
 
 def _location(p: PairData, k: int, side: int, atr4: float) -> bool:
@@ -102,7 +112,7 @@ def _location(p: PairData, k: int, side: int, atr4: float) -> bool:
         bottom, top = lo + 0.382 * (hi - lo), lo + 0.618 * (hi - lo)
         if bottom <= b.high <= top:
             return True
-    # Holding at the previous swing: tested within 0.2 x 4H ATR and closed back on its side.
+    # Holding at the previous swing: tested within 0.2 x trend-bar ATR and closed back on its side.
     if side > 0:
         return abs(b.low - lo) <= 0.2 * atr4 and b.close > lo
     return abs(b.high - hi) <= 0.2 * atr4 and b.close < hi
@@ -138,7 +148,7 @@ def _momentum(p: PairData, k: int, side: int) -> bool:
 
 
 def entry_signal(p: PairData, i: int, side: int, lookback: int = 3) -> Optional[float]:
-    """4H ATR if H1 bar i (just closed) completes an entry in `side`'s direction, else None."""
+    """Trend-bar ATR if entry bar i (just closed) completes an entry in `side`'s direction, else None."""
     trend = p.trend(i, side)
     if trend is None or i < lookback:
         return None
@@ -228,7 +238,13 @@ class Backtest:
     def pair(self, instrument: str) -> Optional[PairData]:
         if instrument not in self._pairs:
             path = self.candles_dir / f"{instrument}_H1.csv"
-            self._pairs[instrument] = PairData(instrument, load_h1(path, instrument)) if path.exists() else None
+            if not path.exists():
+                self._pairs[instrument] = None
+            elif self.params.entry_hours == 1:
+                self._pairs[instrument] = PairData(instrument, load_h1(path, instrument))
+            else:
+                bars = resample(load_h1(path, instrument), self.params.entry_hours)
+                self._pairs[instrument] = PairData(instrument, bars, self.params.entry_hours, 24)
         return self._pairs[instrument]
 
     def event_ahead(self, currencies: tuple[str, ...], when: datetime) -> bool:
@@ -341,7 +357,7 @@ class Backtest:
             last = pd.bars[min(len(pd.bars) - 1, bisect_left([b.time for b in pd.bars], end) - 1)]
             price = last.close - trade.side * last.spread / 2
             trade.swap_r += self.swap_r(trade, trade.entry_time, last.time)
-            trade.close_part(trade.remaining, price, last.time + HOUR, "end_of_test")
+            trade.close_part(trade.remaining, price, last.time + pd.bar_length, "end_of_test")
             finish(trade)
         return Result(p, done, curve, gate_log)
 
@@ -370,8 +386,8 @@ class Backtest:
 
         def accrue_and_close(price: float, reason: str, fraction: float) -> None:
             if fraction >= trade.remaining:
-                trade.swap_r += self.swap_r(trade, trade.entry_time, t + HOUR)
-            trade.close_part(fraction, price, t + HOUR, reason)
+                trade.swap_r += self.swap_r(trade, trade.entry_time, t + pd.bar_length)
+            trade.close_part(fraction, price, t + pd.bar_length, reason)
 
         if s * (open_px - trade.stop) <= 0:  # gapped through the stop
             accrue_and_close(open_px, "stop", trade.remaining)
@@ -380,10 +396,10 @@ class Backtest:
             accrue_and_close(trade.stop, "trail" if trade.trailing else "stop", trade.remaining)
             return
         if not trade.trailing and s * (favourable - trade.target) >= 0:
-            k = pd.h4_at(i)
+            k = pd.htf_at(i)
             strong = (
-                k is not None and pd.h4_ema200[k] is not None and pd.h4_atr[k] is not None
-                and s * (pd.h4[k].close - pd.h4_ema200[k]) > p.strong_trend_atr * pd.h4_atr[k]
+                k is not None and pd.htf_ema200[k] is not None and pd.htf_atr[k] is not None
+                and s * (pd.htf[k].close - pd.htf_ema200[k]) > p.strong_trend_atr * pd.htf_atr[k]
             )
             if not strong:
                 accrue_and_close(trade.target, "target", trade.remaining)
@@ -394,12 +410,12 @@ class Backtest:
             trade.stop = max(trade.stop, trade.entry) if s > 0 else min(trade.stop, trade.entry)
         if trade.trailing:
             trade.best = max(trade.best, favourable) if s > 0 else min(trade.best, favourable)
-            k = pd.h4_at(i)
-            if p.trail == "atr" and k is not None and pd.h4_atr[k] is not None:
-                level = trade.best - s * pd.h4_atr[k]
+            k = pd.htf_at(i)
+            if p.trail == "atr" and k is not None and pd.htf_atr[k] is not None:
+                level = trade.best - s * pd.htf_atr[k]
             elif k is not None:
-                swings = pd.h4_lows[k] if s > 0 else pd.h4_highs[k]
-                level = (pd.h4[swings[-1]].low if s > 0 else pd.h4[swings[-1]].high) if swings else trade.stop
+                swings = pd.htf_lows[k] if s > 0 else pd.htf_highs[k]
+                level = (pd.htf[swings[-1]].low if s > 0 else pd.htf[swings[-1]].high) if swings else trade.stop
             else:
                 level = trade.stop
             trade.stop = max(trade.stop, level) if s > 0 else min(trade.stop, level)
