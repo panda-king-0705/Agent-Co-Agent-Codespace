@@ -30,13 +30,13 @@ BIS_URL = (
 )
 COT_URL = "https://www.cftc.gov/files/dea/history/deacot{year}.zip"
 USER_AGENT = "agentco-fx-research/1.0"
-TIMEOUT_SECONDS = 300
+TIMEOUT_SECONDS = 120
 
 
 def download(url: str, out: Path) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".part")
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
     with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response, open(tmp, "wb") as f:
         size = 0
         while chunk := response.read(1 << 16):
