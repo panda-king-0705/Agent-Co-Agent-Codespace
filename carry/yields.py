@@ -51,6 +51,8 @@ SOURCES: dict[str, list[tuple[str, str]]] = {
 
 # Files only served to browsers: save them by hand into data/macro/yields/manual/.
 MANUAL = {
+    # The current file starts in 2018; the RBNZ's older B2 daily-close history file can be
+    # saved alongside it (any hb2-daily*.xlsx name) to extend NZD back before 2018.
     "NZD": ("hb2-daily-close.xlsx", "https://www.rbnz.govt.nz/statistics/series/exchange-and-interest-rates (B2 daily close)"),
 }
 
@@ -136,13 +138,14 @@ def parse_boe_sheet(rows: list[list]) -> dict[date, float]:
     return values
 
 
-def parse_rbnz_sheet(rows: list[list], series_id: str = "INM.DG102.NZ.C") -> dict[date, float]:
+def parse_rbnz_sheet(rows: list[list], series_prefix: str = "INM.DG102") -> dict[date, float]:
     """RBNZ B2 workbook: a 'Series Id' header row naming each column; dates as Excel serials.
 
-    INM.DG102.NZ.C is the 2-year government bond yield (closing).
+    INM.DG102.* is the 2-year secondary-market government bond closing yield
+    (INM.DG102.NZZCF in the 2018-onward file).
     """
     header = next(r for r in rows if r and isinstance(r[0], str) and r[0].strip().lower() == "series id")
-    column = header.index(series_id)
+    column = next(i for i, sid in enumerate(header) if isinstance(sid, str) and sid.strip().startswith(series_prefix + "."))
     values = {}
     for row in rows:
         if row and isinstance(row[0], (int, float)) and len(row) > column and isinstance(row[column], (int, float)):
@@ -177,8 +180,9 @@ def load_currency(currency: str, directory: str | Path) -> dict[date, float]:
         if (folder / "CHF.csv").exists():
             values.update(parse_snb(_read_text(folder / "CHF.csv")))
     elif currency == "NZD":
-        path = folder / "manual" / MANUAL["NZD"][0]
-        if path.exists():
+        # Every RBNZ B2 workbook present (the 2018-onward file plus any older history file);
+        # the current file sorts last and wins where they overlap.
+        for path in sorted((folder / "manual").glob("hb2-daily*.xlsx"), key=lambda p: (p.name != MANUAL["NZD"][0], p.name), reverse=True):
             values.update(parse_rbnz_sheet(read_sheet(path.read_bytes(), "Data")))
     else:
         path = folder / f"{currency}.csv"

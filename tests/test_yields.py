@@ -96,7 +96,7 @@ def test_boe_zip_reads_2y_and_skips_old_workbooks():
 
 
 def test_rbnz_sheet_by_series_id():
-    rows = [["Series Id", "INM.DG101.NZ.C", "INM.DG102.NZ.C"], [46000, 3.1, 3.4], [46001, 3.2, None]]
+    rows = [["Series Id", "INM.DG101.NZZCF", "INM.DG102.NZZCF"], [46000, 3.1, 3.4], [46001, 3.2, None]]
     assert parse_rbnz_sheet(rows) == {excel_date(46000): 3.4}
 
 
