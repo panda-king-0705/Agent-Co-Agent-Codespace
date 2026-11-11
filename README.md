@@ -39,3 +39,14 @@ FRED (VIX, US 10y-2y, US 2y), BIS central bank policy rates and CFTC Commitments
 S&P 500, WTI and copper daily CFD candles from OANDA, all into `data/macro/`. `carry.macro` loads
 them; every value carries `known_from`, the first time a backtest may use it.
 `python -m scripts.check_candles data` checks the H1 price files.
+
+## Official release history (carry strategy)
+
+```
+python -m scripts.fetch_alfred [SERIES_ID ...]
+```
+
+Downloads every revision of FRED series from ALFRED into `data/macro/alfred/` and reports how much
+release history each has. Needs a free FRED API key in `FRED_API_KEY` (environment or `.env`).
+`carry.alfred` rebuilds each release as first published, computed from that day's vintage, for
+the "beat the previous release" fundamental score.
