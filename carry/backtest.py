@@ -50,7 +50,7 @@ class Params:
     risk_per_trade: float = 0.01
     brake_risk: float = 0.005
     brake_drawdown: float = 0.05
-    blackout_hours: float = 6.0
+    blackout_hours: float = 6.0  # 0 turns the news blackout off
     signal_lookback: int = 3  # bars within which location and momentum may occur
     swap_markup: float = 0.01  # annual, taken off the rate differential
     max_new_per_day: int = 1
@@ -248,6 +248,8 @@ class Backtest:
         return self._pairs[instrument]
 
     def event_ahead(self, currencies: tuple[str, ...], when: datetime) -> bool:
+        if self.params.blackout_hours <= 0:
+            return False
         horizon = when + timedelta(hours=self.params.blackout_hours)
         for c in currencies:
             times = self.events.get(c, [])
@@ -257,6 +259,8 @@ class Backtest:
         return False
 
     def event_behind(self, currencies: tuple[str, ...], when: datetime) -> bool:
+        if self.params.blackout_hours <= 0:
+            return False
         since = when - timedelta(hours=self.params.blackout_hours)
         for c in currencies:
             times = self.events.get(c, [])
