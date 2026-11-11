@@ -9,7 +9,8 @@ From those rows this module rebuilds each release as it was first seen:
   computed from the vintage in force on the release date, so the previous period's
   value is the one traders saw that day, not today's revised figure.
 - Periods that first appear in the series' first vintage are dropped: they are history
-  loaded when ALFRED started tracking the series, not releases.
+  loaded when ALFRED started tracking the series, not releases. So are periods first
+  given a value after a newer period was already out (a source reloading old history).
 
 When a release becomes usable (`known_from`): ALFRED dates are US calendar dates and
 non-US series reach FRED after their national release, sometimes days later. So by
@@ -209,10 +210,17 @@ class Vintages:
             return []
         backfill = min(dates)
         lag = 12 if transform == "yoy" else self.step_months
+        # A release must be for a period newer than any published on an earlier day; older
+        # periods appearing later are reloads (rebasing, a source reloading its history).
+        newest_before: dict[date, date] = {}
+        newest = date.min
+        for day in sorted(set(dates)):
+            newest_before[day] = newest
+            newest = max([newest] + [p for p, d in published.items() if d == day])
         out = []
         for period in self.periods:
             released = published[period]
-            if released is None or released == backfill:
+            if released is None or released == backfill or period <= newest_before[released]:
                 continue
             now = self.value(period, released)
             if transform == "level":
