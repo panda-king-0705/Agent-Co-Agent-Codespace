@@ -50,3 +50,16 @@ Downloads every revision of FRED series from ALFRED into `data/macro/alfred/` an
 release history each has. Needs a free FRED API key in `FRED_API_KEY` (environment or `.env`).
 `carry.alfred` rebuilds each release as first published, computed from that day's vintage, for
 the "beat the previous release" fundamental score.
+
+## Fundamental-score indicators (carry strategy)
+
+```
+python -m scripts.fetch_indicators
+```
+
+One official series per category (inflation, employment, GDP, trade, business, sentiment) for
+each of the 8 economies, listed in `carry.indicators.CATALOG`. US series are exact first releases
+from ALFRED. The others are current revised values from FRED, BIS, Eurostat and the Bank of Canada,
+each treated as released a fixed, conservative number of days after its period ends. Revised
+figures are a little cleaner than what traders saw on the day, so results for those economies can
+look somewhat better than reality. Needs `FRED_API_KEY`.

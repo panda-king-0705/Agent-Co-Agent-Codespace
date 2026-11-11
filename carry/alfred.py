@@ -72,7 +72,7 @@ def api_key(env: Mapping[str, str] | None = None, dotenv_path: str | Path | None
 
 def _get_json(endpoint: str, params: dict[str, str], key: str) -> dict:
     query = urllib.parse.urlencode({**params, "api_key": key, "file_type": "json"})
-    request = urllib.request.Request(f"{API_ROOT}{endpoint}?{query}", headers={"User-Agent": USER_AGENT})
+    request = urllib.request.Request(f"{API_ROOT}{endpoint}?{query}", headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
     label = f"{endpoint} {params.get('series_id', '')}".strip()
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
@@ -113,6 +113,13 @@ def fetch_vintage_rows(series_id: str, key: str, get=_get_json) -> list[list[str
         offset += len(batch)
         if not batch or offset >= int(page.get("count", 0)):
             return rows
+
+
+def fetch_latest_csv(series_id: str, key: str, get=_get_json) -> str:
+    """Today's values of a series as fredgraph-style CSV (observation_date,<ID>)."""
+    page = get("series/observations", {"series_id": series_id, "limit": str(PAGE_LIMIT)}, key)
+    lines = [f"observation_date,{series_id}"] + [f"{o['date']},{o['value']}" for o in page.get("observations", [])]
+    return "\n".join(lines) + "\n"
 
 
 def write_rows(rows: Iterable[list[str]], out: Path) -> None:
