@@ -179,6 +179,10 @@ def test_manage_target_stop_and_blackout():
     bt._manage(usd, p2, 0, p2.bars[0].time)
     assert usd.exit_reason == "blackout"  # US CPI at 13:30, within 6 hours
     assert usd.realized_r == pytest.approx((1.10 - 1.0901) / 0.01)  # bought back at the ask
+    off = Backtest(FakeStrategy(data), ".", Params(blackout_hours=0), {"USD": [utc(2024, 1, 2, 13, 30)]})
+    usd2 = Trade("EUR_USD", "USD", "EUR", -1, t0, 1.10, 0.01, 1.11, 1.07, 0.01, 4, 2, best=1.10)
+    off._manage(usd2, p2, 0, p2.bars[0].time)
+    assert usd2.remaining == 1.0 and not off.event_behind(("USD",), utc(2024, 1, 2, 14))  # blackout off
 
 
 def test_drawdown_brake_and_summary():
