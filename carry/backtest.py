@@ -1,0 +1,439 @@
+"""Hourly backtest engine for the carry strategy.
+
+Each UTC day the Strategy decides which pairs may be traded (carry rank, score, gates).
+Each hour, for those pairs, the 1H/4H entry rules are checked on the bar that just closed;
+a signal fills at the next bar's open. Fills are at bid/ask: mid +/- half the spread.
+
+Per trade:
+- Stop = stop_atr x 4H ATR(14) from the fill (that distance is 1R); take-profit at 3R.
+- At 3R, if price is more than strong_trend_atr x 4H ATR beyond the 4H 200 EMA, close 75%
+  and trail the rest (1 x 4H ATR behind the best price, or the last 4H swing); otherwise
+  close it all. If a bar touches both stop and target, the stop is assumed hit first.
+- Closed at the bar's open: when a red event for either currency is within the blackout
+  window ahead, or when the carry ranking no longer has the pair's currencies in the
+  top 3 / bottom 3. Stop to break-even if in profit when VIX turns risk-off, the score gap
+  falls below the threshold, or COT turns.
+- Swap: the policy-rate differential minus a broker markup, accrued over time held.
+
+Risk: risk_per_trade of equity per trade (brake_risk once equity is brake_drawdown below its
+peak). At most one new trade per day and no currency in more than one open trade.
+Equity moves when a trade closes (no mark-to-market), so drawdown is on closed trades.
+"""
+
+from __future__ import annotations
+
+import csv
+from bisect import bisect_left
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Optional
+
+from carry.strategy import GATES, Candidate, DayContext, Strategy
+from carry.ta import Bar, atr, ema, load_h1, macd_histogram, resample_4h, rsi, swing_history
+
+HOUR = timedelta(hours=1)
+
+
+@dataclass(frozen=True)
+class Params:
+    score_threshold: int = 3
+    stop_atr: float = 1.5
+    take_profit_r: float = 3.0
+    strong_trend_atr: float = 2.0
+    close_fraction_at_target: float = 0.75
+    trail: str = "atr"  # atr | swing
+    risk_per_trade: float = 0.01
+    brake_risk: float = 0.005
+    brake_drawdown: float = 0.05
+    blackout_hours: float = 6.0
+    signal_lookback: int = 3  # bars within which location and momentum may occur
+    swap_markup: float = 0.01  # annual, taken off the rate differential
+    max_new_per_day: int = 1
+
+
+class PairData:
+    """One instrument's H1 bars with every indicator precomputed."""
+
+    def __init__(self, instrument: str, bars: list[Bar]):
+        self.instrument = instrument
+        self.bars = bars
+        self.index = {b.time: i for i, b in enumerate(bars)}
+        closes = [b.close for b in bars]
+        self.ema50 = ema(closes, 50)
+        self.rsi = rsi(closes, 14)
+        self.macd = macd_histogram(closes)
+        self.highs, self.lows = swing_history(bars)
+        self.h4 = resample_4h(bars)
+        h4_closes = [b.close for b in self.h4]
+        self.h4_ema200 = ema(h4_closes, 200)
+        self.h4_atr = atr(self.h4, 14)
+        self.h4_highs, self.h4_lows = swing_history(self.h4)
+        self._h4_done = [b.time + timedelta(hours=4) for b in self.h4]
+
+    def h4_at(self, i: int) -> Optional[int]:
+        """Index of the last 4H bar complete when H1 bar i closes."""
+        closed = self.bars[i].time + HOUR
+        k = bisect_left(self._h4_done, closed + timedelta(microseconds=1)) - 1
+        return k if k >= 0 else None
+
+    def trend(self, i: int, side: int) -> Optional[tuple[float, float, float]]:
+        """(4H close, 4H EMA200, 4H ATR) at H1 bar i if the 4H trend is in `side`'s direction."""
+        k = self.h4_at(i)
+        if k is None or self.h4_ema200[k] is None or self.h4_atr[k] is None:
+            return None
+        close, line = self.h4[k].close, self.h4_ema200[k]
+        return (close, line, self.h4_atr[k]) if side * (close - line) > 0 else None
+
+
+def _location(p: PairData, k: int, side: int, atr4: float) -> bool:
+    b = p.bars[k]
+    if p.ema50[k] is not None and b.low <= p.ema50[k] <= b.high:
+        return True
+    highs, lows = p.highs[k], p.lows[k]
+    if not highs or not lows:
+        return False
+    hi, lo = p.bars[highs[-1]].high, p.bars[lows[-1]].low
+    if side > 0 and lows[-1] < highs[-1]:  # up-swing low -> high, pulling back
+        top, bottom = hi - 0.382 * (hi - lo), hi - 0.618 * (hi - lo)
+        if bottom <= b.low <= top:
+            return True
+    if side < 0 and highs[-1] < lows[-1]:  # down-swing high -> low, pulling back up
+        bottom, top = lo + 0.382 * (hi - lo), lo + 0.618 * (hi - lo)
+        if bottom <= b.high <= top:
+            return True
+    # Holding at the previous swing: tested within 0.2 x 4H ATR and closed back on its side.
+    if side > 0:
+        return abs(b.low - lo) <= 0.2 * atr4 and b.close > lo
+    return abs(b.high - hi) <= 0.2 * atr4 and b.close < hi
+
+
+def _trigger(p: PairData, k: int, side: int) -> bool:
+    if k < 1:
+        return False
+    b, prev = p.bars[k], p.bars[k - 1]
+    body, rng = abs(b.close - b.open), b.high - b.low
+    if side > 0:
+        engulf = prev.close < prev.open and b.close > b.open and b.close >= prev.open and b.open <= prev.close
+        wick = min(b.open, b.close) - b.low
+        pin = rng > 0 and wick >= 2 * body and wick >= 0.6 * rng and b.close >= b.low + rng / 2
+        highs = p.highs[k]
+        breakout = len(highs) >= 2 and p.bars[highs[-1]].high < p.bars[highs[-2]].high and b.close > p.bars[highs[-1]].high
+        return engulf or pin or breakout
+    engulf = prev.close > prev.open and b.close < b.open and b.close <= prev.open and b.open >= prev.close
+    wick = b.high - max(b.open, b.close)
+    pin = rng > 0 and wick >= 2 * body and wick >= 0.6 * rng and b.close <= b.high - rng / 2
+    lows = p.lows[k]
+    breakdown = len(lows) >= 2 and p.bars[lows[-1]].low > p.bars[lows[-2]].low and b.close < p.bars[lows[-1]].low
+    return engulf or pin or breakdown
+
+
+def _momentum(p: PairData, k: int, side: int) -> bool:
+    if k < 1:
+        return False
+    r0, r1, m0, m1 = p.rsi[k - 1], p.rsi[k], p.macd[k - 1], p.macd[k]
+    rsi_flip = r0 is not None and r1 is not None and side * (r0 - 50) < 0 <= side * (r1 - 50)
+    macd_flip = m0 is not None and m1 is not None and side * m0 < 0 <= side * m1
+    return rsi_flip or macd_flip
+
+
+def entry_signal(p: PairData, i: int, side: int, lookback: int = 3) -> Optional[float]:
+    """4H ATR if H1 bar i (just closed) completes an entry in `side`'s direction, else None."""
+    trend = p.trend(i, side)
+    if trend is None or i < lookback:
+        return None
+    atr4 = trend[2]
+    window = range(i - lookback + 1, i + 1)
+    if not _trigger(p, i, side):
+        return None
+    if not any(_location(p, k, side, atr4) for k in window):
+        return None
+    if not any(_momentum(p, k, side) for k in window):
+        return None
+    return atr4
+
+
+@dataclass
+class Trade:
+    instrument: str
+    high: str
+    low: str
+    side: int
+    entry_time: datetime
+    entry: float
+    r_distance: float
+    stop: float
+    target: float
+    risk: float
+    score_diff: int
+    soft_count: int
+    remaining: float = 1.0
+    realized_r: float = 0.0
+    trailing: bool = False
+    best: float = 0.0
+    swap_r: float = 0.0
+    exit_time: Optional[datetime] = None
+    exit_reason: str = ""
+    exits: list = field(default_factory=list)
+
+    @property
+    def result_r(self) -> float:
+        return self.realized_r + self.swap_r
+
+    def close_part(self, fraction: float, price: float, when: datetime, reason: str) -> None:
+        fraction = min(fraction, self.remaining)
+        self.realized_r += fraction * self.side * (price - self.entry) / self.r_distance
+        self.remaining -= fraction
+        self.exits.append((when, price, fraction, reason))
+        if self.remaining <= 1e-9:
+            self.remaining = 0.0
+            self.exit_time, self.exit_reason = when, reason
+
+
+@dataclass
+class Result:
+    params: Params
+    trades: list[Trade]
+    equity: list[tuple[datetime, float]]
+    gate_log: list[dict]
+
+    def summary(self) -> dict:
+        rs = [t.result_r for t in self.trades]
+        wins = [r for r in rs if r > 0]
+        peak, worst = 1.0, 0.0
+        for _, e in self.equity:
+            peak = max(peak, e)
+            worst = max(worst, 1 - e / peak)
+        n = len(rs)
+        avg = sum(rs) / n if n else 0.0
+        return {
+            "trades": n,
+            "win_rate": len(wins) / n if n else 0.0,
+            "avg_r": avg,
+            "total_r": sum(rs),
+            "max_drawdown": worst,
+            "final_equity": self.equity[-1][1] if self.equity else 1.0,
+            "passes": n >= 100 and avg >= 0.2 and worst <= 0.10,
+        }
+
+
+class Backtest:
+    def __init__(self, strategy: Strategy, candles_dir: str | Path, params: Params, events: dict[str, list[datetime]]):
+        self.strategy = strategy
+        self.candles_dir = Path(candles_dir)
+        self.params = params
+        self.events = {c: sorted(ts) for c, ts in events.items()}
+        self._pairs: dict[str, Optional[PairData]] = {}
+
+    def pair(self, instrument: str) -> Optional[PairData]:
+        if instrument not in self._pairs:
+            path = self.candles_dir / f"{instrument}_H1.csv"
+            self._pairs[instrument] = PairData(instrument, load_h1(path, instrument)) if path.exists() else None
+        return self._pairs[instrument]
+
+    def event_ahead(self, currencies: tuple[str, ...], when: datetime) -> bool:
+        horizon = when + timedelta(hours=self.params.blackout_hours)
+        for c in currencies:
+            times = self.events.get(c, [])
+            k = bisect_left(times, when)
+            if k < len(times) and times[k] <= horizon:
+                return True
+        return False
+
+    def event_behind(self, currencies: tuple[str, ...], when: datetime) -> bool:
+        since = when - timedelta(hours=self.params.blackout_hours)
+        for c in currencies:
+            times = self.events.get(c, [])
+            k = bisect_left(times, since)
+            if k < len(times) and times[k] <= when:
+                return True
+        return False
+
+    def swap_r(self, t: Trade, start: datetime, end: datetime) -> float:
+        data = self.strategy.data
+        hi, lo = data.rates[t.high].asof(start), data.rates[t.low].asof(start)
+        if hi is None or lo is None:
+            return 0.0
+        annual = (hi.value - lo.value) / 100.0 - self.params.swap_markup
+        years = (end - start).total_seconds() / (365 * 24 * 3600)
+        return annual * years * t.entry / t.r_distance
+
+    def run(self, start: datetime, end: datetime) -> Result:
+        p = self.params
+        equity, peak = 1.0, 1.0
+        curve: list[tuple[datetime, float]] = [(start, equity)]
+        open_trades: list[Trade] = []
+        done: list[Trade] = []
+        gate_log: list[dict] = []
+        day: Optional[DayContext] = None
+        new_today = 0
+        t = start.replace(minute=0, second=0, microsecond=0)
+
+        def finish(trade: Trade) -> None:
+            nonlocal equity, peak
+            open_trades.remove(trade)
+            done.append(trade)
+            equity *= 1 + trade.risk * trade.result_r
+            peak = max(peak, equity)
+            curve.append((trade.exit_time, equity))
+
+        while t < end:
+            if day is None or t.date() != day.when.date():
+                day = self.strategy.day(t)
+                new_today = 0
+                for c in day.candidates:
+                    gate_log.append({"date": t.date().isoformat(), "instrument": c.instrument, "side": c.side,
+                                     "high": c.high, "low": c.low, "score_diff": c.score_diff, "soft": c.soft_count,
+                                     **{g: int(c.gates[g]) for g in GATES}, "all": int(c.passed)})
+                by_pair = {(c.high, c.low): c for c in day.candidates}
+                for trade in list(open_trades):
+                    c = by_pair.get((trade.high, trade.low))
+                    if c is None:  # carry ranking changed
+                        pd = self.pair(trade.instrument)
+                        i = pd.index.get(t) if pd else None
+                        if i is not None:
+                            bar = pd.bars[i]
+                            price = bar.open - trade.side * bar.spread / 2
+                            trade.swap_r += self.swap_r(trade, trade.entry_time, t)
+                            trade.close_part(trade.remaining, price, t, "carry_change")
+                            finish(trade)
+                        continue
+                    if not (c.gates["vix"] and c.gates["score"] and c.gates["cot"]):
+                        pd = self.pair(trade.instrument)
+                        i = pd.index.get(t) if pd else None
+                        if i is not None and trade.side * (pd.bars[i].open - trade.entry) > 0:
+                            trade.stop = max(trade.stop, trade.entry) if trade.side > 0 else min(trade.stop, trade.entry)
+
+            for trade in list(open_trades):
+                pd = self.pair(trade.instrument)
+                i = pd.index.get(t)
+                if i is None:
+                    continue
+                self._manage(trade, pd, i, t)
+                if trade.remaining == 0.0:
+                    finish(trade)
+
+            if new_today < p.max_new_per_day and day.candidates:
+                busy = {c for tr in open_trades for c in (tr.high, tr.low)}
+                for c in day.candidates:
+                    if not c.passed or c.high in busy or c.low in busy:
+                        continue
+                    if self.event_ahead((c.high, c.low), t) or self.event_behind((c.high, c.low), t):
+                        continue
+                    pd = self.pair(c.instrument)
+                    i = pd.index.get(t) if pd else None
+                    if i is None or i < 1:
+                        continue
+                    atr4 = entry_signal(pd, i - 1, c.side, p.signal_lookback)
+                    if atr4 is None:
+                        continue
+                    trade = self._open(c, pd, i, t, atr4, equity, peak)
+                    open_trades.append(trade)
+                    new_today += 1
+                    self._manage(trade, pd, i, t)  # the rest of the entry bar can stop it out
+                    if trade.remaining == 0.0:
+                        finish(trade)
+                    break
+            t += HOUR
+
+        for trade in list(open_trades):  # still open at the end: close at the last close
+            pd = self.pair(trade.instrument)
+            last = pd.bars[min(len(pd.bars) - 1, bisect_left([b.time for b in pd.bars], end) - 1)]
+            price = last.close - trade.side * last.spread / 2
+            trade.swap_r += self.swap_r(trade, trade.entry_time, last.time)
+            trade.close_part(trade.remaining, price, last.time + HOUR, "end_of_test")
+            finish(trade)
+        return Result(p, done, curve, gate_log)
+
+    def _open(self, c: Candidate, pd: PairData, i: int, t: datetime, atr4: float, equity: float, peak: float) -> Trade:
+        p = self.params
+        bar = pd.bars[i]
+        entry = bar.open + c.side * bar.spread / 2
+        r = p.stop_atr * atr4
+        risk = p.brake_risk if equity < (1 - p.brake_drawdown) * peak else p.risk_per_trade
+        return Trade(c.instrument, c.high, c.low, c.side, t, entry, r, entry - c.side * r, entry + c.side * p.take_profit_r * r,
+                     risk, c.score_diff, c.soft_count, best=entry)
+
+    def _manage(self, trade: Trade, pd: PairData, i: int, t: datetime) -> None:
+        p = self.params
+        bar = pd.bars[i]
+        half = bar.spread / 2
+        s = trade.side
+        # Exit side of the book: a long sells at the bid, a short buys at the ask.
+        open_px, low_px, high_px = bar.open - s * half, bar.low - s * half, bar.high - s * half
+        adverse, favourable = (low_px, high_px) if s > 0 else (high_px, low_px)
+
+        if self.event_ahead((trade.high, trade.low), t):
+            trade.swap_r += self.swap_r(trade, trade.entry_time, t)
+            trade.close_part(trade.remaining, open_px, t, "blackout")
+            return
+
+        def accrue_and_close(price: float, reason: str, fraction: float) -> None:
+            if fraction >= trade.remaining:
+                trade.swap_r += self.swap_r(trade, trade.entry_time, t + HOUR)
+            trade.close_part(fraction, price, t + HOUR, reason)
+
+        if s * (open_px - trade.stop) <= 0:  # gapped through the stop
+            accrue_and_close(open_px, "stop", trade.remaining)
+            return
+        if s * (adverse - trade.stop) <= 0:
+            accrue_and_close(trade.stop, "trail" if trade.trailing else "stop", trade.remaining)
+            return
+        if not trade.trailing and s * (favourable - trade.target) >= 0:
+            k = pd.h4_at(i)
+            strong = (
+                k is not None and pd.h4_ema200[k] is not None and pd.h4_atr[k] is not None
+                and s * (pd.h4[k].close - pd.h4_ema200[k]) > p.strong_trend_atr * pd.h4_atr[k]
+            )
+            if not strong:
+                accrue_and_close(trade.target, "target", trade.remaining)
+                return
+            accrue_and_close(trade.target, "target", p.close_fraction_at_target)
+            trade.trailing = True
+            trade.best = trade.target
+            trade.stop = max(trade.stop, trade.entry) if s > 0 else min(trade.stop, trade.entry)
+        if trade.trailing:
+            trade.best = max(trade.best, favourable) if s > 0 else min(trade.best, favourable)
+            k = pd.h4_at(i)
+            if p.trail == "atr" and k is not None and pd.h4_atr[k] is not None:
+                level = trade.best - s * pd.h4_atr[k]
+            elif k is not None:
+                swings = pd.h4_lows[k] if s > 0 else pd.h4_highs[k]
+                level = (pd.h4[swings[-1]].low if s > 0 else pd.h4[swings[-1]].high) if swings else trade.stop
+            else:
+                level = trade.stop
+            trade.stop = max(trade.stop, level) if s > 0 else min(trade.stop, level)
+
+
+# --- output ----------------------------------------------------------------------------------
+
+
+def write_result(result: Result, out_dir: str | Path) -> dict:
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    fields = ["instrument", "side", "high", "low", "entry_time", "exit_time", "exit_reason", "entry", "r_distance",
+              "risk", "score_diff", "soft_count", "realized_r", "swap_r", "result_r"]
+    with open(out / "trades.csv", "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(fields)
+        for t in result.trades:
+            row = {**asdict(t), "result_r": t.result_r}
+            w.writerow([row[k].isoformat() if isinstance(row[k], datetime) else row[k] for k in fields])
+    if result.gate_log:
+        with open(out / "gates.csv", "w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(result.gate_log[0]))
+            w.writeheader()
+            w.writerows(result.gate_log)
+    with open(out / "equity.csv", "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["time", "equity"])
+        w.writerows((t.isoformat(), f"{e:.6f}") for t, e in result.equity)
+    summary = result.summary()
+    with open(out / "summary.txt", "w", encoding="utf-8") as f:
+        for k, v in {**asdict(result.params), **summary}.items():
+            f.write(f"{k}: {v}\n")
+    return summary
+
+
+def utc_day(text: str) -> datetime:
+    return datetime.fromisoformat(text).replace(tzinfo=timezone.utc)
