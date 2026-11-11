@@ -4,6 +4,7 @@ Usage:
     python -m scripts.run_backtest [--start 2010-01-01] [--end 2026-11-01]
         [--score-threshold 3] [--stop-atr 1.5] [--trail atr|swing] [--entry-hours 1|4]
         [--blackout-hours 6] [--rank-by policy|yield2y] [--min-rate-gap 0] [--split 2018-07-01]
+        [--skip-gates score,vix]
         [--out logs/backtest/baseline]
 
 --entry-hours 1 (default) enters and exits on 1H bars with the 4H trend; 4 enters and exits
@@ -12,6 +13,8 @@ on 4H bars with the daily trend (stop, target and trail then use the daily ATR).
 yield is missing); --min-rate-gap only enters pairs whose ranked levels differ by at least that
 many percentage points. --split also prints (and writes to summary.txt) the summary for trades
 entered before and from that date, to keep a tuning period apart from a holdout period.
+--skip-gates lists gates (score, vix, cot, yield_spread, commodity, soft, rate_gap) that are
+still logged but no longer required to enter.
 --blackout-hours 0 turns the news blackout off: entries are allowed near red events and trades stay open through them.
 
 Reads data/<PAIR>_H1.csv and data/macro/ (see the README for the download scripts).
@@ -51,20 +54,22 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--rank-by", choices=("policy", "yield2y"), default="policy")
     parser.add_argument("--min-rate-gap", type=float, default=0.0)
     parser.add_argument("--split", default=None)
+    parser.add_argument("--skip-gates", default="", help="comma-separated gates not required to enter")
     parser.add_argument("--out", default="logs/backtest/baseline")
     args = parser.parse_args(argv)
 
     began = time.time()
+    skip = tuple(g for g in args.skip_gates.split(",") if g)
     data = MarketData.load(args.macro_dir)
     params = Params(score_threshold=args.score_threshold, stop_atr=args.stop_atr, trail=args.trail, entry_hours=args.entry_hours,
                     blackout_hours=args.blackout_hours)
-    backtest = Backtest(Strategy(data, params.score_threshold, args.rank_by, args.min_rate_gap), args.candles_dir, params, red_events(args.macro_dir))
+    backtest = Backtest(Strategy(data, params.score_threshold, args.rank_by, args.min_rate_gap, skip), args.candles_dir, params, red_events(args.macro_dir))
     result = backtest.run(utc_day(args.start), utc_day(args.end))
     summary = write_result(result, args.out)
     print(f"{args.start} .. {args.end}  threshold {params.score_threshold}  stop {params.stop_atr} ATR  trail {params.trail}  "
-          f"entries {params.entry_hours}H  blackout {params.blackout_hours:g}h  rank {args.rank_by}  min gap {args.min_rate_gap:g}")
+          f"entries {params.entry_hours}H  blackout {params.blackout_hours:g}h  rank {args.rank_by}  min gap {args.min_rate_gap:g}  skip {','.join(skip) or '-'}")
     print(line(summary))
-    extra = {"rank_by": args.rank_by, "min_rate_gap": args.min_rate_gap}
+    extra = {"rank_by": args.rank_by, "min_rate_gap": args.min_rate_gap, "skip_gates": ",".join(skip)}
     if args.split:
         split = utc_day(args.split)
         for label, part in (("before", result.summary(until=split)), ("from", result.summary(since=split))):
