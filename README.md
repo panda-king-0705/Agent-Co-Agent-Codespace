@@ -63,3 +63,14 @@ from ALFRED. The others are current revised values from FRED, BIS, Eurostat and 
 each treated as released a fixed, conservative number of days after its period ends. Revised
 figures are a little cleaner than what traders saw on the day, so results for those economies can
 look somewhat better than reality. Needs `FRED_API_KEY`.
+
+## 2-year government bond yields (carry strategy)
+
+```
+python -m scripts.fetch_yields
+```
+
+Daily 2-year yields for the yield-spread gate, from FRED, the Bundesbank, the Bank of England,
+Japan's Ministry of Finance, the SNB, the Bank of Canada and (for Australia, from 2013) DBnomics,
+into `data/macro/yields/`. The RBNZ only serves its file to browsers: download the B2 daily-close
+workbook by hand into `data/macro/yields/manual/` (see `carry.yields.MANUAL`).
