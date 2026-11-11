@@ -50,6 +50,16 @@ def test_releases_skip_backfill_and_use_vintage_of_the_day():
     assert [r.value for r in v.releases("diff")] == pytest.approx([0.5, 0.8, 1.0])
 
 
+def test_reloaded_old_periods_are_not_releases():
+    reloaded = CPI + rows(
+        "2018-06-01,2020-06-01,9999-12-31,95.0\n"  # old period first valued after Apr was out
+        "2020-05-01,2020-06-01,9999-12-31,104.0\n"  # the genuine release that day
+    )
+    assert [r.period for r in Vintages(reloaded).releases("level")] == [
+        date(2020, 2, 1), date(2020, 3, 1), date(2020, 4, 1), date(2020, 5, 1)
+    ]
+
+
 def test_value_lookup_respects_realtime_window():
     v = Vintages(CPI)
     assert v.value(date(2020, 1, 1), date(2020, 3, 9)) == 100.0
