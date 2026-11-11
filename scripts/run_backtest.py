@@ -73,8 +73,7 @@ def main(argv: list[str] | None = None) -> dict:
         extra["split"] = args.split
     with open(Path(args.out) / "summary.txt", "a", encoding="utf-8") as f:
         for k, v in extra.items():
-            f.write(f"{k}: {v}
-")
+            f.write(f"{k}: {v}\n")
     print(f"results in {args.out} ({time.time() - began:.0f}s)")
     return summary
 

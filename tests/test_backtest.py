@@ -229,3 +229,10 @@ def test_drawdown_brake_and_summary():
     r = Result(Params(), [t], [(utc(2024, 1, 1), 1.0), (utc(2024, 2, 1), 0.92), (utc(2024, 3, 1), 1.1)], [])
     assert r.summary()["max_drawdown"] == pytest.approx(0.08)
     assert isinstance(DayContext(utc(2024, 1, 1), [], {}, {}, []).top(), list)
+
+
+def test_run_backtest_script_imports():
+    import scripts.run_backtest as rb
+
+    assert "trades 0" in rb.line({"trades": 0, "win_rate": 0.0, "avg_r": 0.0, "total_r": 0.0,
+                                  "max_drawdown": 0.0, "final_equity": 1.0, "passes": False})
