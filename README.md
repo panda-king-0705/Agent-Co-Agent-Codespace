@@ -74,3 +74,14 @@ Daily 2-year yields for the yield-spread gate, from FRED, the Bundesbank, the Ba
 Japan's Ministry of Finance, the SNB, the Bank of Canada and (for Australia, from 2013) DBnomics,
 into `data/macro/yields/`. The RBNZ only serves its file to browsers: download the B2 daily-close
 workbook by hand into `data/macro/yields/manual/` (see `carry.yields.MANUAL`).
+
+## Backtest (carry strategy)
+
+```
+python -m scripts.run_backtest [--start 2010-01-01] [--end 2026-11-01] [--score-threshold 3] [--stop-atr 1.5] [--trail atr|swing]
+```
+
+Runs the founder's rules on the local H1 files and `data/macro/` (fetch them with the scripts above)
+and writes `trades.csv`, `gates.csv` (every candidate pair per day and which gates passed),
+`equity.csv` and `summary.txt` to `logs/backtest/<run>/`. The interpretations of rules that left
+room are listed at the top of `carry/strategy.py` and `carry/backtest.py`. Not trading advice.
