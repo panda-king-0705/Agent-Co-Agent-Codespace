@@ -24,6 +24,8 @@ Interpretations of the founder's rules (decided where the rule left room, all pa
 - Rate gap (min_rate_gap, percentage points): the high-yield currency's level, as ranked,
   must exceed the low-yield one's by at least this much. An entry gate only: a trade open
   on a pair whose gap narrows below it stays open until the ranking changes.
+- Skipped gates (skip_gates): still computed and logged, but not required to enter, and
+  (for score, VIX and COT) no longer move an open trade's stop to break-even.
 """
 
 from __future__ import annotations
@@ -107,10 +109,11 @@ class Candidate:
     rate_diff: float
     gates: dict[str, bool] = field(default_factory=dict)
     soft_count: int = 0
+    required: tuple[str, ...] = GATES
 
     @property
     def passed(self) -> bool:
-        return all(self.gates.get(g, False) for g in GATES)
+        return all(self.gates.get(g, False) for g in self.required)
 
 
 @dataclass
@@ -129,9 +132,14 @@ class DayContext:
 
 
 class Strategy:
-    def __init__(self, data: MarketData, score_threshold: int = 3, rank_by: str = "policy", min_rate_gap: float = 0.0):
+    def __init__(self, data: MarketData, score_threshold: int = 3, rank_by: str = "policy", min_rate_gap: float = 0.0,
+                 skip_gates: Iterable[str] = ()):
         if rank_by not in RANK_BY:
             raise ValueError(f"rank_by must be one of {RANK_BY}")
+        unknown = set(skip_gates) - set(GATES)
+        if unknown:
+            raise ValueError(f"unknown gates {sorted(unknown)}; gates are {GATES}")
+        self.required = tuple(g for g in GATES if g not in set(skip_gates))
         self.data = data
         self.score_threshold = score_threshold
         self.rank_by = rank_by
@@ -233,6 +241,7 @@ class Strategy:
                 instrument, side = instrument_for(high, low)
                 c = Candidate(high, low, instrument, side, scores[high] - scores[low], levels[high] - levels[low])
                 c.soft_count = soft
+                c.required = self.required
                 c.gates = {
                     "score": c.score_diff >= self.score_threshold,
                     "vix": vix,

@@ -79,7 +79,7 @@ workbook by hand into `data/macro/yields/manual/` (see `carry.yields.MANUAL`).
 
 ```
 python -m scripts.run_backtest [--start 2010-01-01] [--end 2026-11-01] [--score-threshold 3] [--stop-atr 1.5] [--trail atr|swing] [--entry-hours 1|4]
-    [--blackout-hours 6] [--rank-by policy|yield2y] [--min-rate-gap 0] [--split 2018-07-01]
+    [--blackout-hours 6] [--rank-by policy|yield2y] [--min-rate-gap 0] [--split 2018-07-01] [--skip-gates score,vix]
 ```
 
 `--entry-hours 1` (default) takes entries and exits on 1H bars with the trend, stop and trail on 4H bars.

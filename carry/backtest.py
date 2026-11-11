@@ -331,7 +331,7 @@ class Backtest:
                             trade.close_part(trade.remaining, price, t, "carry_change")
                             finish(trade)
                         continue
-                    if not (c.gates["vix"] and c.gates["score"] and c.gates["cot"]):
+                    if not all(c.gates[g] for g in ("vix", "score", "cot") if g in c.required):
                         pd = self.pair(trade.instrument)
                         i = pd.index.get(t) if pd else None
                         if i is not None and trade.side * (pd.bars[i].open - trade.entry) > 0:

@@ -117,6 +117,12 @@ def test_yield_ranking_and_rate_gap():
     assert passed[("USD", "JPY")] and not passed[("GBP", "CHF")]  # 4.9 >= 3.5, 3.0 < 3.5
     with pytest.raises(ValueError):
         Strategy(make_data(), rank_by="other")
+    skip = Strategy(make_data(), min_rate_gap=3.5, skip_gates=("rate_gap",))
+    skip.expansion, skip.score = gap.expansion, gap.score
+    c = next(c for c in skip.day(when).candidates if (c.high, c.low) == ("GBP", "CHF"))
+    assert not c.gates["rate_gap"] and "rate_gap" not in c.required  # logged, not required
+    with pytest.raises(ValueError):
+        Strategy(make_data(), skip_gates=("nope",))
 
 
 def test_period_summary():
