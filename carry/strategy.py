@@ -18,6 +18,12 @@ Interpretations of the founder's rules (decided where the rule left room, all pa
 - Commodities: CAD needs WTI on its side of its 50-day average, AUD and NZD need copper on
   theirs (above when the currency is bought, below when sold).
 - Soft inputs: S&P 500 above its 50-day average, or US 10y-2y above zero.
+- Carry ranking (rank_by): "policy" ranks by central bank policy rates; "yield2y" ranks by
+  2-year government yields, falling back to the policy rate for a currency whose yield is
+  missing or more than 5 days old (AUD before 2013-09, NZD before 2018 and in 2019-20).
+- Rate gap (min_rate_gap, percentage points): the high-yield currency's level, as ranked,
+  must exceed the low-yield one's by at least this much. An entry gate only: a trade open
+  on a pair whose gap narrows below it stays open until the ranking changes.
 """
 
 from __future__ import annotations
@@ -37,7 +43,9 @@ CURRENCIES = ("USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD")
 # OANDA quotes each pair with the earlier currency in this list as the base.
 BASE_ORDER = ("EUR", "GBP", "AUD", "NZD", "USD", "CAD", "CHF", "JPY")
 COMMODITY = {"CAD": "wti", "AUD": "copper", "NZD": "copper"}
-GATES = ("score", "vix", "cot", "yield_spread", "commodity", "soft")
+GATES = ("score", "vix", "cot", "yield_spread", "commodity", "soft", "rate_gap")
+RANK_BY = ("policy", "yield2y")
+YIELD_MAX_AGE_DAYS = 5
 
 
 def instrument_for(a: str, b: str) -> tuple[str, int]:
@@ -121,16 +129,33 @@ class DayContext:
 
 
 class Strategy:
-    def __init__(self, data: MarketData, score_threshold: int = 3):
+    def __init__(self, data: MarketData, score_threshold: int = 3, rank_by: str = "policy", min_rate_gap: float = 0.0):
+        if rank_by not in RANK_BY:
+            raise ValueError(f"rank_by must be one of {RANK_BY}")
         self.data = data
         self.score_threshold = score_threshold
+        self.rank_by = rank_by
+        self.min_rate_gap = min_rate_gap
 
     # --- carry ranking ---
+    def carry_levels(self, when: datetime) -> dict[str, float]:
+        """Each currency's carry level (percent) as known at `when`; empty if any is unknown."""
+        levels = {}
+        for c in CURRENCIES:
+            policy = self.data.rates[c].asof(when) if c in self.data.rates else None
+            if policy is None:
+                return {}
+            value = policy.value
+            if self.rank_by == "yield2y" and c in self.data.yields:
+                y = self.data.yields[c].asof(when)
+                if y is not None and (when.date() - y.date).days <= YIELD_MAX_AGE_DAYS:
+                    value = y.value
+            levels[c] = value
+        return levels
+
     def ranking(self, when: datetime) -> list[str]:
-        known = {c: self.data.rates[c].asof(when) for c in CURRENCIES if c in self.data.rates}
-        if any(v is None for v in known.values()) or len(known) < len(CURRENCIES):
-            return []
-        return sorted(known, key=lambda c: (-known[c].value, c))
+        levels = self.carry_levels(when)
+        return sorted(levels, key=lambda c: (-levels[c], c)) if levels else []
 
     # --- fundamental score ---
     def expansion(self, currency: str, when: datetime) -> bool:
@@ -194,19 +219,19 @@ class Strategy:
 
     # --- the day ---
     def day(self, when: datetime) -> DayContext:
-        ranking = self.ranking(when)
+        levels = self.carry_levels(when)
+        ranking = sorted(levels, key=lambda c: (-levels[c], c)) if levels else []
         if not ranking:
             return DayContext(when, [], {}, {}, [])
         expansion = {c: self.expansion(c, when) for c in CURRENCIES}
         scores = {c: self.score(c, when, expansion[c]) for c in CURRENCIES}
         vix = self.vix_ok(when)
         soft = self.soft_count(when)
-        rates = {c: self.data.rates[c].asof(when).value for c in CURRENCIES}
         candidates = []
         for high in ranking[:3]:
             for low in ranking[-3:]:
                 instrument, side = instrument_for(high, low)
-                c = Candidate(high, low, instrument, side, scores[high] - scores[low], rates[high] - rates[low])
+                c = Candidate(high, low, instrument, side, scores[high] - scores[low], levels[high] - levels[low])
                 c.soft_count = soft
                 c.gates = {
                     "score": c.score_diff >= self.score_threshold,
@@ -215,6 +240,7 @@ class Strategy:
                     "yield_spread": self.yield_ok(high, low, when),
                     "commodity": self.commodity_ok(high, low, when),
                     "soft": soft >= 1,
+                    "rate_gap": c.rate_diff >= self.min_rate_gap,
                 }
                 candidates.append(c)
         # Ties: more soft inputs agreeing, then the larger score gap, then the larger rate gap.

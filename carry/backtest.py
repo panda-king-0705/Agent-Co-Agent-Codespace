@@ -207,11 +207,24 @@ class Result:
     equity: list[tuple[datetime, float]]
     gate_log: list[dict]
 
-    def summary(self) -> dict:
-        rs = [t.result_r for t in self.trades]
+    def summary(self, since: Optional[datetime] = None, until: Optional[datetime] = None) -> dict:
+        """Pass-bar statistics, for all trades or those entered in [since, until).
+
+        For the whole run the equity curve is used; for a period it is rebuilt by compounding
+        that period's trades in exit order (as the run does), starting from 1.
+        """
+        whole = since is None and until is None
+        trades = [t for t in self.trades if (since is None or t.entry_time >= since) and (until is None or t.entry_time < until)]
+        rs = [t.result_r for t in trades]
         wins = [r for r in rs if r > 0]
-        peak, worst = 1.0, 0.0
-        for _, e in self.equity:
+        if whole:
+            curve = [e for _, e in self.equity] or [1.0]
+        else:
+            curve = [1.0]
+            for t in sorted(trades, key=lambda t: t.exit_time):
+                curve.append(curve[-1] * (1 + t.risk * t.result_r))
+        equity, peak, worst = curve[-1], 1.0, 0.0
+        for e in curve:
             peak = max(peak, e)
             worst = max(worst, 1 - e / peak)
         n = len(rs)
@@ -222,7 +235,7 @@ class Result:
             "avg_r": avg,
             "total_r": sum(rs),
             "max_drawdown": worst,
-            "final_equity": self.equity[-1][1] if self.equity else 1.0,
+            "final_equity": equity,
             "passes": n >= 100 and avg >= 0.2 and worst <= 0.10,
         }
 
