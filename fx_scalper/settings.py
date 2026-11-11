@@ -66,10 +66,10 @@ def _required(env: Mapping[str, str], name: str) -> str:
     return value.strip()
 
 
-def read_dotenv(path: str | Path) -> dict[str, str]:
+def read_dotenv(path: str | Path, keys: tuple[str, ...] = DOTENV_KEYS) -> dict[str, str]:
     """Credential variables from a .env file: KEY=VALUE lines, # comments, optional quotes.
 
-    A missing file gives {}. Keys other than DOTENV_KEYS are ignored. Malformed lines are
+    A missing file gives {}. Keys other than `keys` (default DOTENV_KEYS) are ignored. Malformed lines are
     skipped silently so a value can never end up in an error message.
     """
     try:
@@ -86,7 +86,7 @@ def read_dotenv(path: str | Path) -> dict[str, str]:
             key = key[len("export "):].strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
             value = value[1:-1]
-        if key in DOTENV_KEYS:
+        if key in keys:
             values[key] = value
     return values
 
