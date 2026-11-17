@@ -99,6 +99,35 @@ def above_average(series: Series, when: datetime, days: int) -> Optional[bool]:
     return recent[-1].value > _mean([o.value for o in recent])
 
 
+def carry_levels(rates: dict[str, Series], yields: dict[str, Series], rank_by: str, when: datetime) -> dict[str, float]:
+    """Each currency's carry level (percent) as known at `when`; empty if any is unknown.
+
+    "policy" uses policy rates; "yield2y" uses 2-year yields, falling back to the policy
+    rate for a currency whose yield is missing or more than YIELD_MAX_AGE_DAYS old.
+    """
+    levels = {}
+    for c in CURRENCIES:
+        policy = rates[c].asof(when) if c in rates else None
+        if policy is None:
+            return {}
+        value = policy.value
+        if rank_by == "yield2y" and c in yields:
+            y = yields[c].asof(when)
+            if y is not None and (when.date() - y.date).days <= YIELD_MAX_AGE_DAYS:
+                value = y.value
+        levels[c] = value
+    return levels
+
+
+def vix_calm(vix: Series, when: datetime, ceiling: float = 20.0, spike: float = 1.2) -> bool:
+    """VIX below `ceiling` and no more than `spike` x its 10-day average, as known at `when`."""
+    recent = vix.last(when, 10)
+    if len(recent) < 10:
+        return False
+    latest = recent[-1].value
+    return latest < ceiling and latest <= spike * _mean([o.value for o in recent])
+
+
 @dataclass
 class Candidate:
     high: str
@@ -148,18 +177,7 @@ class Strategy:
     # --- carry ranking ---
     def carry_levels(self, when: datetime) -> dict[str, float]:
         """Each currency's carry level (percent) as known at `when`; empty if any is unknown."""
-        levels = {}
-        for c in CURRENCIES:
-            policy = self.data.rates[c].asof(when) if c in self.data.rates else None
-            if policy is None:
-                return {}
-            value = policy.value
-            if self.rank_by == "yield2y" and c in self.data.yields:
-                y = self.data.yields[c].asof(when)
-                if y is not None and (when.date() - y.date).days <= YIELD_MAX_AGE_DAYS:
-                    value = y.value
-            levels[c] = value
-        return levels
+        return carry_levels(self.data.rates, self.data.yields, self.rank_by, when)
 
     def ranking(self, when: datetime) -> list[str]:
         levels = self.carry_levels(when)
@@ -187,11 +205,7 @@ class Strategy:
 
     # --- gates ---
     def vix_ok(self, when: datetime) -> bool:
-        recent = self.data.vix.last(when, 10)
-        if len(recent) < 10:
-            return False
-        latest = recent[-1].value
-        return latest < 20.0 and latest <= 1.2 * _mean([o.value for o in recent])
+        return vix_calm(self.data.vix, when)
 
     def cot_ok(self, high: str, low: str, when: datetime) -> bool:
         def change(currency: str) -> Optional[float]:
