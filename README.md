@@ -97,3 +97,17 @@ Runs the founder's rules on the local H1 files and `data/macro/` (fetch them wit
 and writes `trades.csv`, `gates.csv` (every candidate pair per day and which gates passed),
 `equity.csv` and `summary.txt` to `logs/backtest/<run>/`. The interpretations of rules that left
 room are listed at the top of `carry/strategy.py` and `carry/backtest.py`. Not trading advice.
+
+## Carry basket
+
+```
+python -m scripts.run_basket [--start 2011-01-01] [--end 2026-11-01] [--per-side 3] [--rank-by policy|yield2y]
+    [--filter none|vix|vix_gate|realized|target] [--split 2018-07-01] [--out logs/backtest/basket/base]
+```
+
+A different test of the carry idea, with no entry patterns, stops or targets: each month it goes long
+the top 3 currencies by carry and short the bottom 3 (equal weights, held through the USD pairs), and
+a volatility filter can take it flat or scale it. It is marked to market daily and judged on annual
+return, volatility, Sharpe ratio and maximum drawdown instead of per-trade R. Costs: half the spread on
+every change of weight and a 1% a year financing markup. Rules and assumptions are at the top of
+`carry/basket.py`. Not trading advice.
